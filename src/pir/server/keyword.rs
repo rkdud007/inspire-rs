@@ -1,25 +1,31 @@
-use std::io;
-use std::net::TcpStream;
-
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::io;
+use std::marker::PhantomData;
+use std::net::TcpStream;
 
+use crate::PUBLIC_KEY_ID_LEN;
+use crate::aligned_memory::AlignedMemory64;
 use crate::commons::{
     DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload,
-    MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS, deserialize_keyword_query, recv_msg,
-    send_msg, serialize_keyword_response,
+    MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS, deserialize_keyword_query,
+    params_rgswpir_given_input_size_and_dim0, recv_msg, send_msg, serialize_keyword_response,
 };
 use crate::dataset::Dataset;
 use crate::gadget::gadget_invert;
+use crate::gpu::encode as cuda_encode;
 use crate::gpu::gemv as cuda_gemv;
 use crate::gpu::packing_online as cuda_packing_online;
 use crate::kv::cuckoo::{CuckooParams, CuckooTable, DETERMINISTIC_SEED};
 use crate::modulus_switch::ModulusSwitch;
-use crate::packing::{PackParams, PrecompInsPIR};
-use crate::params::Params;
+use crate::number_theory::invert_uint_mod;
+use crate::packing::{PackParams, PackingType, PrecompInsPIR};
+use crate::pir::measurement::Measurement;
 use crate::pir::params::GetQPrime;
+use crate::pir::scheme::ProtocolType;
+use crate::pir::server::YServer;
 use crate::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw, multiply, to_ntt};
 
 pub fn default_bucket_count(record_count: usize) -> usize {
@@ -43,10 +49,9 @@ pub fn build_cuckoo_table(dataset: &Dataset, num_items: usize) -> CuckooTable {
     table
 }
 
-pub struct KeywordServer {
+pub struct KeywordServer<T: Sync> {
     table: CuckooTable,
-    params: Arc<Params>,
-    pack_params: PackParams,
+    y_server: YServer<T>,
     precomp_inspir_vec: Vec<PrecompInsPIR>,
     num_items: usize,
     entry_size: usize,
@@ -61,10 +66,148 @@ pub struct KeywordServer {
     rlwe_q_prime_2: u64,
 }
 
-impl KeywordServer {
+impl KeywordServer<u16> {
+    pub fn from_dataset(
+        dataset: &Dataset,
+        buckets: Option<usize>,
+        dim0: Option<usize>,
+    ) -> io::Result<Self> {
+        if dataset.records.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dataset must contain at least one record",
+            ));
+        }
+
+        let num_items = buckets.unwrap_or_else(|| default_bucket_count(dataset.records.len()));
+        if num_items < dataset.records.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "bucket count {} must be >= record count {}",
+                    num_items,
+                    dataset.records.len()
+                ),
+            ));
+        }
+
+        let entry_size = PUBLIC_KEY_ID_LEN + dataset.public_key_len;
+        let item_size_bits = entry_size * 8;
+        if item_size_bits % 16 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry size must be a multiple of 16 bits",
+            ));
+        }
+
+        cuda_encode::init_memory_pool();
+
+        let dim0 = dim0.unwrap_or_else(|| {
+            let default_dim0 = if num_items >= 256_000_000 {
+                32768
+            } else {
+                2048
+            };
+            let (_, _, (db_rows, _, _)) =
+                params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, default_dim0);
+            db_rows
+        });
+
+        let (params, interpolate_degree, _) =
+            params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
+
+        let gamma = params.poly_len;
+        let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
+        let db_cols = params.instances * params.poly_len;
+        let db_cols_prime = db_cols / gamma;
+        let c = db_cols_prime / interpolate_degree;
+        let pt_modulus = params.pt_modulus;
+        if num_items < db_rows {
+            let min_records = db_rows / 2 + 1;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "bucket count {} is too small for the PIR scheme (needs at least {}); regenerate the dataset with at least {} records, or pass --buckets {}",
+                    num_items, db_rows, min_records, db_rows
+                ),
+            ));
+        }
+
+        let per = num_items / db_rows;
+        let item_size_elements = item_size_bits / 16;
+        let table = build_cuckoo_table(dataset, num_items);
+        let raw_db = table.to_raw_db(db_rows, db_cols, per, item_size_elements);
+
+        let num_inv = invert_uint_mod(interpolate_degree as u64, pt_modulus).unwrap();
+        let mut dummy_out = vec![0u16; raw_db.len().min(8)];
+        let db_out_slice =
+            unsafe { std::slice::from_raw_parts_mut(dummy_out.as_mut_ptr(), raw_db.len()) };
+        cuda_encode::gpu_encode_database(
+            &raw_db,
+            db_out_slice,
+            db_rows,
+            db_cols,
+            interpolate_degree,
+            gamma,
+            c,
+            pt_modulus,
+            num_inv,
+        );
+        drop(dummy_out);
+
+        let d_db_ptr = cuda_encode::get_device_db();
+        cuda_gemv::gpu_set_device_db(d_db_ptr, db_rows, db_cols);
+
+        let packing_params_new = PackParams::new(&params, gamma);
+        let half_packing_params = PackParams::new(&params, gamma >> 1);
+        let mut packing_params_set = HashMap::new();
+        let mut half_packing_params_set = HashMap::new();
+        packing_params_set.insert(gamma, packing_params_new);
+        half_packing_params_set.insert(gamma, half_packing_params);
+
+        let smaller_params = params.clone();
+        let db_buf_aligned = AlignedMemory64::new(1);
+        let y_server: YServer<u16> = YServer {
+            params: std::sync::Arc::new(params.clone()),
+            packing_params_set,
+            half_packing_params_set,
+            smaller_params,
+            db_buf_aligned,
+            phantom: PhantomData,
+            protocol_type: ProtocolType::SimplePIR,
+            second_level_packing_mask: PackingType::InspiRING,
+            second_level_packing_body: PackingType::NoPacking,
+        };
+
+        let mut measurement = Measurement::default();
+        let offline_vals =
+            y_server.perform_offline_precomputation_simplepir(gamma, Some(&mut measurement), false);
+        let precomp_inspir_vec = offline_vals.precomp_inspir_vec;
+
+        if !cuda_packing_online::is_rotation_tables_uploaded() {
+            cuda_packing_online::gpu_rotation_setup_tables(
+                &y_server.packing_params_set[&gamma],
+                &params,
+            );
+        }
+
+        Ok(KeywordServer::new(
+            table,
+            y_server,
+            precomp_inspir_vec,
+            num_items,
+            entry_size,
+            dim0,
+            dataset.kem_name.clone(),
+            interpolate_degree,
+        ))
+    }
+}
+
+impl<T: Sync> KeywordServer<T> {
     pub fn new(
         table: CuckooTable,
-        params: &'a Params,
+        y_server: YServer<T>,
         precomp_inspir_vec: Vec<PrecompInsPIR>,
         num_items: usize,
         entry_size: usize,
@@ -72,7 +215,7 @@ impl KeywordServer {
         kem_name: String,
         interpolate_degree: usize,
     ) -> Self {
-        let params = Arc::new(params.clone());
+        let params = y_server.params.as_ref();
         let gamma = params.poly_len;
         let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
         let db_cols = params.instances * params.poly_len;
@@ -83,8 +226,7 @@ impl KeywordServer {
 
         Self {
             table,
-            params,
-            pack_params: PackParams::new_fast(params, gamma),
+            y_server,
             precomp_inspir_vec,
             num_items,
             entry_size,
@@ -98,6 +240,10 @@ impl KeywordServer {
             rlwe_q_prime_1,
             rlwe_q_prime_2,
         }
+    }
+
+    fn params(&self) -> &crate::params::Params {
+        self.y_server.params.as_ref()
     }
 
     pub fn handshake(&self) -> HandshakeParams {
@@ -133,8 +279,9 @@ impl KeywordServer {
             ));
         }
 
-        let decoded_query =
-            deserialize_keyword_query(self.params.as_ref(), &self.pack_params, query_bytes);
+        let params = self.params();
+        let packing_params = &self.y_server.packing_params_set[&self.gamma];
+        let decoded_query = deserialize_keyword_query(params, packing_params, query_bytes);
         cuda_packing_online::gpu_expand_and_set_keys(
             decoded_query
                 .packing_keys
@@ -146,7 +293,7 @@ impl KeywordServer {
                 .z_body_condensed
                 .as_ref()
                 .unwrap(),
-            self.params.as_ref(),
+            params,
         );
         let DecodedKeywordQuery { queries, .. } = decoded_query;
 
@@ -156,7 +303,7 @@ impl KeywordServer {
             let mut ct_gsw = ct_gsw_body.pad_top(1);
             for i in 0..ct_gsw.cols {
                 let a = PolyMatrixRaw::random_rng(
-                    self.params.as_ref(),
+                    params,
                     1,
                     1,
                     &mut ChaCha20Rng::from_seed(RGSW_SEEDS[i]),
@@ -168,16 +315,16 @@ impl KeywordServer {
             let rgsw_results: Vec<PolyMatrixRaw> = (0..self.c)
                 .into_par_iter()
                 .map(|which_poly| {
-                    let mut ginv_c = PolyMatrixRaw::zero(self.params.as_ref(), 2 * ell, 1);
-                    let mut ginv_c_ntt = PolyMatrixNTT::zero(self.params.as_ref(), 2 * ell, 1);
-                    let mut sum = PolyMatrixRaw::zero(self.params.as_ref(), 2, 1);
+                    let mut ginv_c = PolyMatrixRaw::zero(params, 2 * ell, 1);
+                    let mut ginv_c_ntt = PolyMatrixNTT::zero(params, 2 * ell, 1);
+                    let mut sum = PolyMatrixRaw::zero(params, 2, 1);
                     for i in (0..self.interpolate_degree).rev() {
-                        let mut prod = PolyMatrixNTT::zero(self.params.as_ref(), 2, 1);
+                        let mut prod = PolyMatrixNTT::zero(params, 2, 1);
                         gadget_invert(&mut ginv_c, &sum);
                         to_ntt(&mut ginv_c_ntt, &ginv_c);
                         multiply(&mut prod, &ct_gsw, &ginv_c_ntt);
                         sum = &prod.raw() + &packed[which_poly * self.interpolate_degree + i];
-                        sum.reduce_mod(self.params.modulus);
+                        sum.reduce_mod(params.modulus);
                     }
                     sum
                 })
@@ -197,16 +344,16 @@ impl KeywordServer {
                 packed_query_row.as_slice(),
                 self.db_rows,
                 self.db_cols,
-                &self.params.moduli,
-                &self.params.barrett_cr_1,
-                self.params.mod0_inv_mod1,
-                self.params.mod1_inv_mod0,
-                self.params.modulus,
-                self.params.barrett_cr_0_modulus,
-                self.params.barrett_cr_1_modulus,
+                &params.moduli,
+                &params.barrett_cr_1,
+                params.mod0_inv_mod1,
+                params.mod1_inv_mod0,
+                params.modulus,
+                params.barrett_cr_0_modulus,
+                params.barrett_cr_1_modulus,
             );
             cuda_packing_online::gpu_packing_online_run(
-                self.params.as_ref(),
+                params,
                 &self.precomp_inspir_vec,
                 intermediate.as_slice(),
                 self.gamma,

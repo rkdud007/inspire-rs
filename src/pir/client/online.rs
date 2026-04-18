@@ -1,7 +1,7 @@
-use std::cmp::min;
 use log::debug;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use std::cmp::min;
 
 use crate::aligned_memory::AlignedMemory64;
 use crate::{

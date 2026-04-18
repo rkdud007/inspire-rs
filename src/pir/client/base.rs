@@ -32,12 +32,7 @@ pub const DEFAULT_PARAMS: &'static str = r#"
 
 const UUID_V4_LEN: usize = 36;
 
-fn new_vec_raw(
-    params: &Params,
-    num: usize,
-    rows: usize,
-    cols: usize,
-) -> Vec<PolyMatrixRaw> {
+fn new_vec_raw(params: &Params, num: usize, rows: usize, cols: usize) -> Vec<PolyMatrixRaw> {
     let mut v = Vec::with_capacity(num);
     for _ in 0..num {
         v.push(PolyMatrixRaw::zero(params, rows, cols));
@@ -181,9 +176,7 @@ impl PublicParameters {
         Some(v.iter().map(from_ntt_alloc).collect())
     }
 
-    fn from_ntt_alloc_opt_vec(
-        v: &Option<Vec<PolyMatrixNTT>>,
-    ) -> Option<Vec<PolyMatrixRaw>> {
+    fn from_ntt_alloc_opt_vec(v: &Option<Vec<PolyMatrixNTT>>) -> Option<Vec<PolyMatrixRaw>> {
         Some(v.as_ref()?.iter().map(from_ntt_alloc).collect())
     }
 
@@ -430,11 +423,7 @@ impl Client {
         p
     }
 
-    fn get_regev_sample(
-        &self,
-        rng: &mut ChaCha20Rng,
-        rng_pub: &mut ChaCha20Rng,
-    ) -> PolyMatrixNTT {
+    fn get_regev_sample(&self, rng: &mut ChaCha20Rng, rng_pub: &mut ChaCha20Rng) -> PolyMatrixNTT {
         let params = self.params.clone();
         let a = PolyMatrixRaw::random_rng(params.clone(), 1, 1, rng_pub);
         let e = PolyMatrixRaw::fast_noise(params.clone(), 1, 1, &self.dg, rng);

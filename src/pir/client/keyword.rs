@@ -6,8 +6,9 @@ use crate::gadget::get_bits_per;
 use crate::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
 use crate::modulus_switch::ModulusSwitch;
 use crate::packing::{PackParams, PackingKeys, PackingType};
-use crate::pir::client::{YClient, decrypt_ct_reg_measured, pack_query};
+use crate::pir::client::{Client, YClient, decrypt_ct_reg_measured, pack_query};
 use crate::pir::params::GetQPrime;
+use crate::pir::scheme::{V_SEED, W_SEED};
 use crate::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
 use crate::{KEM_ML_KEM_768, PUBLIC_KEY_ID_LEN, derive_public_key_id};
 use rand::SeedableRng;
@@ -28,8 +29,8 @@ impl Default for KeywordClientConfig {
     }
 }
 
-pub struct KeywordClient<'a> {
-    y_client: &'a YClient,
+pub struct KeywordClient {
+    y_client: YClient,
     keyword: KeywordPirHandshake,
     kem_name: String,
     packing_type: PackingType,
@@ -43,13 +44,11 @@ pub struct KeywordClient<'a> {
     rlwe_q_prime_2: u64,
 }
 
-impl<'a> KeywordClient<'a> {
+impl KeywordClient {
     pub fn from_handshake(
-        y_client: &'a YClient,
         handshake: &HandshakeParams,
         config: KeywordClientConfig,
     ) -> Result<Self, String> {
-        let params = y_client.params();
         let keyword = handshake
             .keyword_pir
             .clone()
@@ -61,6 +60,13 @@ impl<'a> KeywordClient<'a> {
             ));
         }
 
+        let (params, _, _) = crate::commons::params_rgswpir_given_input_size_and_dim0(
+            handshake.num_items,
+            handshake.item_size_bits,
+            handshake.dim0,
+        );
+        let y_client = YClient::new(Client::init(&params));
+        let params = y_client.params();
         let gamma = params.poly_len;
         let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
         let db_cols = params.instances * params.poly_len;
@@ -108,6 +114,10 @@ impl<'a> KeywordClient<'a> {
 
     fn params(&self) -> &crate::params::Params {
         self.y_client.params()
+    }
+
+    pub fn kem_name(&self) -> &str {
+        &self.kem_name
     }
 
     pub fn packing_params(&self) -> PackParams {
@@ -178,6 +188,15 @@ impl<'a> KeywordClient<'a> {
             .map(|&bucket_idx| self.build_query_for_index(bucket_idx))
             .collect();
         serialize_keyword_query(self.params(), packing_keys, &queries)
+    }
+
+    pub fn build_request(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> (Vec<usize>, Vec<u8>) {
+        let positions = self.positions(query_id);
+        let packing_params = self.packing_params();
+        let sk_reg = self.y_client.client().get_sk_reg().clone();
+        let mut packing_keys = PackingKeys::init_full(&packing_params, &sk_reg, W_SEED, V_SEED);
+        let serialized = self.serialize_request(&mut packing_keys, &positions);
+        (positions, serialized)
     }
 
     fn decrypt_response_values(&self, response_data: &[u8]) -> Vec<u64> {

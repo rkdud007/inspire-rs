@@ -340,7 +340,6 @@ impl PolyMatrixRaw {
         }
         data
     }
-
 }
 
 impl PolyMatrix for PolyMatrixNTT {
@@ -748,12 +747,7 @@ pub fn sub_into(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     }
 }
 
-pub fn add_into_at(
-    res: &mut PolyMatrixNTT,
-    a: &PolyMatrixNTT,
-    t_row: usize,
-    t_col: usize,
-) {
+pub fn add_into_at(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, t_row: usize, t_col: usize) {
     let params = Arc::clone(&res.params);
     let params = params.as_ref();
     for i in 0..a.rows {
@@ -832,11 +826,7 @@ pub fn stack_ntt(a: &PolyMatrixNTT, b: &PolyMatrixNTT) -> PolyMatrixNTT {
     c
 }
 
-pub fn scalar_multiply(
-    res: &mut PolyMatrixNTT,
-    a: &PolyMatrixNTT,
-    b: &PolyMatrixNTT,
-) {
+pub fn scalar_multiply(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatrixNTT) {
     assert_eq!(a.rows, 1);
     assert_eq!(a.cols, 1);
 
@@ -927,11 +917,7 @@ pub fn from_ntt(a: &mut PolyMatrixRaw, b: &PolyMatrixNTT) {
     });
 }
 
-pub fn from_ntt_scratch(
-    a: &mut PolyMatrixRaw,
-    scratch: &mut [u64],
-    b: &PolyMatrixNTT,
-) {
+pub fn from_ntt_scratch(a: &mut PolyMatrixRaw, scratch: &mut [u64], b: &PolyMatrixNTT) {
     assert_eq!(b.rows, 2);
     assert_eq!(b.cols, 1);
 

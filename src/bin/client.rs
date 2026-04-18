@@ -3,14 +3,12 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
-use inspire_rs::commons::params_rgswpir_given_input_size_and_dim0;
 use inspire_rs::commons::{
     HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE,
     deserialize_keyword_response, recv_msg, send_msg,
 };
-use inspire_rs::packing::{PackingKeys, PackingType};
-use inspire_rs::pir::client::{Client, KeywordClient, KeywordClientConfig, YClient};
-use inspire_rs::pir::scheme::{V_SEED, W_SEED};
+use inspire_rs::packing::PackingType;
+use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 
 use inspire_rs::{PUBLIC_KEY_ID_LEN, derive_public_key_id};
 
@@ -98,31 +96,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let (params, _, _) = params_rgswpir_given_input_size_and_dim0(
-        handshake.num_items,
-        handshake.item_size_bits,
-        handshake.dim0,
-    );
-
     let packing_type = PackingType::InspiRING;
-
-    let client = Client::init(&params);
-    let sk_reg_owned = client.get_sk_reg().clone();
-    let y_client = YClient::new(client);
     let keyword_client = KeywordClient::from_handshake(
-        &y_client,
         &handshake,
         KeywordClientConfig {
             kem_name: kem_name.to_string(),
             packing_type,
         },
     )?;
-    let positions = keyword_client.positions(&query_id);
-    let packing_params = keyword_client.packing_params();
 
     let t_total = Instant::now();
-    let mut packing_keys = PackingKeys::init_full(&packing_params, &sk_reg_owned, W_SEED, V_SEED);
-    let serialized = keyword_client.serialize_request(&mut packing_keys, &positions);
+    let (positions, serialized) = keyword_client.build_request(&query_id);
     send_msg(&mut stream, MSG_KEYWORD_QUERY, &serialized)?;
 
     let (msg_type, response_data) = recv_msg(&mut stream)?;

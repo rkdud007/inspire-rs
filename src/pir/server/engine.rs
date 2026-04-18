@@ -44,9 +44,7 @@ use crate::{
     transpose::*,
 };
 
-pub fn generate_y_constants<'a>(
-    params: &'a Params,
-) -> (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) {
+pub fn generate_y_constants<'a>(params: &'a Params) -> (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) {
     let mut y_constants = Vec::new();
     let mut neg_y_constants = Vec::new();
     for num_cts_log2 in 1..params.poly_len_log2 + 1 {
@@ -817,8 +815,7 @@ where
         };
         let _ = t2.elapsed();
 
-        let mut y_constants: (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) =
-            (Vec::new(), Vec::new());
+        let mut y_constants: (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) = (Vec::new(), Vec::new());
         let mut fake_pack_pub_params: Vec<PolyMatrixNTT> = Vec::new();
 
         if self.second_level_packing_mask == PackingType::CDKS {

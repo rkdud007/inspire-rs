@@ -1,25 +1,13 @@
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::io;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
 
-use inspire_rs::aligned_memory::AlignedMemory64;
-use inspire_rs::commons::params_rgswpir_given_input_size_and_dim0;
 use inspire_rs::commons::{MSG_HANDSHAKE, send_msg};
-use inspire_rs::gpu::encode as cuda_encode;
-use inspire_rs::gpu::gemv as cuda_gemv;
-use inspire_rs::gpu::packing_online as cuda_packing_online;
-use inspire_rs::number_theory::invert_uint_mod;
-use inspire_rs::packing::{PackParams, PackingType};
-use inspire_rs::params::Params;
-use inspire_rs::pir::measurement::Measurement;
-use inspire_rs::pir::scheme::ProtocolType;
-use inspire_rs::pir::server::{KeywordServer, YServer, build_cuckoo_table, default_bucket_count};
-
-use inspire_rs::{PUBLIC_KEY_ID_LEN, load_dataset};
+use inspire_rs::load_dataset;
+use inspire_rs::pir::server::KeywordServer;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -68,155 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.kem_name,
         dataset.public_key_len
     ));
-
-    let num_items = args
-        .buckets
-        .unwrap_or_else(|| default_bucket_count(dataset.records.len()));
-    if num_items < dataset.records.len() {
-        return Err(format!(
-            "bucket count {} must be >= record count {}",
-            num_items,
-            dataset.records.len()
-        )
-        .into());
-    }
-
-    let entry_size = PUBLIC_KEY_ID_LEN + dataset.public_key_len;
-    let item_size_bits = entry_size * 8;
-    if item_size_bits % 16 != 0 {
-        return Err("entry size must be a multiple of 16 bits".into());
-    }
-
-    log("initializing CUDA memory pool");
-    cuda_encode::init_memory_pool();
-    log("CUDA memory pool ready");
-
-    let dim0 = args.dim0.unwrap_or_else(|| {
-        let default_dim0 = if num_items >= 256_000_000 {
-            32768
-        } else {
-            2048
-        };
-        let (_params, _, (db_rows, _, _)) =
-            params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, default_dim0);
-        db_rows
-    });
-    log(&format!(
-        "PIR params: buckets={} entry_size={} dim0={}",
-        num_items, entry_size, dim0
-    ));
-
-    let params: &'static Params = Box::leak(Box::new({
-        let (p, _, _) = params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
-        p
-    }));
-    let interpolate_degree = {
-        let (_, id, _) = params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
-        id
-    };
-
-    let gamma = params.poly_len;
-    let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
-    let db_cols = params.instances * params.poly_len;
-    let db_cols_prime = db_cols / gamma;
-    let c = db_cols_prime / interpolate_degree;
-    let pt_modulus = params.pt_modulus;
-    if num_items < db_rows {
-        // Find the minimum record count whose default bucket count meets db_rows.
-        // default_bucket_count(n) = (n.max(512) * 2).next_power_of_two()
-        // That equals db_rows when n > db_rows/2, so min_records = db_rows/2 + 1.
-        let min_records = db_rows / 2 + 1;
-        return Err(format!(
-            "bucket count {} is too small for the PIR scheme (needs at least {}); \
-             regenerate the dataset with at least {} records, or pass --buckets {}",
-            num_items, db_rows, min_records, db_rows
-        )
-        .into());
-    }
-    let per = num_items / db_rows;
-    let item_size_elements = item_size_bits / 16;
-    log(&format!(
-        "db layout: rows={} cols={} gamma={} interpolate_degree={} c={} per={}",
-        db_rows, db_cols, gamma, interpolate_degree, c, per
-    ));
-
-    log("building cuckoo table");
-    let table = build_cuckoo_table(&dataset, num_items);
-    log("converting cuckoo table to raw DB");
-    let raw_db = table.to_raw_db(db_rows, db_cols, per, item_size_elements);
-
-    log("encoding database on GPU");
-    let num_inv = invert_uint_mod(interpolate_degree as u64, pt_modulus).unwrap();
-    let mut dummy_out = vec![0u16; raw_db.len().min(8)];
-    let db_out_slice =
-        unsafe { std::slice::from_raw_parts_mut(dummy_out.as_mut_ptr(), raw_db.len()) };
-    cuda_encode::gpu_encode_database(
-        &raw_db,
-        db_out_slice,
-        db_rows,
-        db_cols,
-        interpolate_degree,
-        gamma,
-        c,
-        pt_modulus,
-        num_inv,
-    );
-    drop(dummy_out);
-    log("GPU database encoded");
-
-    log("uploading database to GPU device memory");
-    let d_db_ptr = cuda_encode::get_device_db();
-    cuda_gemv::gpu_set_device_db(d_db_ptr, db_rows, db_cols);
-    log("GPU device database set");
-
-    let packing_params_new = PackParams::new(params, gamma);
-    let half_packing_params = PackParams::new(params, gamma >> 1);
-    let mut packing_params_set = HashMap::new();
-    let mut half_packing_params_set = HashMap::new();
-    packing_params_set.insert(gamma, packing_params_new);
-    half_packing_params_set.insert(gamma, half_packing_params);
-
-    let smaller_params = params.clone();
-    let db_buf_aligned = AlignedMemory64::new(1);
-    type T = u16;
-    let y_server: &'static YServer< T> = Box::leak(Box::new(YServer {
-        params: std::sync::Arc::new(params.clone()),
-        packing_params_set,
-        half_packing_params_set,
-        smaller_params,
-        db_buf_aligned,
-        phantom: PhantomData,
-        protocol_type: ProtocolType::SimplePIR,
-        second_level_packing_mask: PackingType::InspiRING,
-        second_level_packing_body: PackingType::NoPacking,
-    }));
-
-    log("running offline precomputation (SimplePIR) — this may take a while");
-    let mut measurement = Measurement::default();
-    let offline_vals =
-        y_server.perform_offline_precomputation_simplepir(gamma, Some(&mut measurement), false);
-    let precomp_inspir_vec = offline_vals.precomp_inspir_vec;
-    log("offline precomputation done");
-
-    if !cuda_packing_online::is_rotation_tables_uploaded() {
-        log("uploading GPU rotation tables");
-        cuda_packing_online::gpu_rotation_setup_tables(
-            &y_server.packing_params_set[&gamma],
-            params,
-        );
-        log("rotation tables uploaded");
-    }
-
-    let keyword_server = KeywordServer::new(
-        table,
-        params,
-        precomp_inspir_vec,
-        num_items,
-        entry_size,
-        dim0,
-        dataset.kem_name.clone(),
-        interpolate_degree,
-    );
+    log("initializing keyword PIR runtime");
+    let keyword_server = KeywordServer::from_dataset(&dataset, args.buckets, args.dim0)?;
+    log("keyword PIR runtime ready");
     let handshake = keyword_server.handshake();
     let handshake_json = serde_json::to_vec(&handshake)?;
 
@@ -228,7 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "entry size {} bytes, buckets {}, dim0 {}",
-        entry_size, num_items, dim0
+        handshake.item_size_bits / 8,
+        handshake.num_items,
+        handshake.dim0
     );
 
     let listener = TcpListener::bind(&args.listen)?;
