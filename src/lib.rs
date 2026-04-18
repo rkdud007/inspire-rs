@@ -15,8 +15,8 @@ pub use pir::{convolution, matmul, modulus_switch, packing};
 pub use protocol::wire as commons;
 
 pub use dataset::{
-    DATASET_MAGIC, DEFAULT_DATASET_BATCH_SIZE, Dataset, DatasetRecord, DatasetWriter,
-    KEM_ML_KEM_512, KEM_ML_KEM_768, KEM_ML_KEM_1024, PUBLIC_KEY_ID_DOMAIN, PUBLIC_KEY_ID_LEN,
-    derive_public_key_id, generate_dataset, load_dataset, save_dataset,
+    DATASET_MAGIC, DEFAULT_DATASET_BATCH_SIZE, Dataset, DatasetGenerator, DatasetRecord,
+    DatasetWriter, KEM_ML_KEM_512, KEM_ML_KEM_768, KEM_ML_KEM_1024, PUBLIC_KEY_ID_DOMAIN,
+    PUBLIC_KEY_ID_LEN, derive_public_key_id, load_dataset, save_dataset,
 };
 pub use kem::KemVariant;

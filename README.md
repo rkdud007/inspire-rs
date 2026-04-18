@@ -13,11 +13,12 @@ The library exposes:
 ### Generate a dataset
 
 ```rust
-use inspire_rs::{KemVariant, generate_dataset, save_dataset};
+use inspire_rs::{DatasetGenerator, KemVariant, save_dataset};
 
-let dataset = generate_dataset(KemVariant::MlKem768, 10_000, 7)?;
+let dataset = DatasetGenerator::new(KemVariant::MlKem768, 10_000)
+    .with_seed(7)
+    .generate()?;
 save_dataset("keys.bin".as_ref(), &dataset)?;
-# Ok::<(), std::io::Error>(())
 ```
 
 ### Run a server and client
@@ -104,7 +105,7 @@ cargo run --bin client -- --server 127.0.0.1:8082 --public-key-file ./public_key
 
 ## End-to-End Test
 
-The integration test in [tests/e2e.rs](/Users/piapark/Documents/GitHub/inspire-rs/tests/e2e.rs) does not spawn binaries. It:
+The integration test in [tests/e2e.rs](tests/e2e.rs) does not spawn binaries. It:
 - generates a 10,000-record dataset through the library
 - saves and reloads it from a temp directory
 - constructs `KeywordServer` and `KeywordClient` directly

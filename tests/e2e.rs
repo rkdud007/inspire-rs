@@ -13,7 +13,7 @@ use inspire_rs::commons::{
 };
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
-use inspire_rs::{Dataset, KemVariant, generate_dataset, load_dataset, save_dataset};
+use inspire_rs::{Dataset, DatasetGenerator, KemVariant, load_dataset, save_dataset};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -45,7 +45,10 @@ impl Drop for TempDirGuard {
 
 fn make_dataset(temp_dir: &Path) -> ([u8; 32], Vec<u8>, Dataset) {
     const RECORD_COUNT: usize = 10_000;
-    let dataset = generate_dataset(KemVariant::MlKem768, RECORD_COUNT, 7).unwrap();
+    let dataset = DatasetGenerator::new(KemVariant::MlKem768, RECORD_COUNT)
+        .with_seed(7)
+        .generate()
+        .unwrap();
     let mut selection_rng = ChaCha20Rng::seed_from_u64(2026);
     let target_index = selection_rng.random_range(0..RECORD_COUNT);
     let expected_record = dataset.records[target_index].clone();
