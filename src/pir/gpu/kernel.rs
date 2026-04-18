@@ -392,8 +392,8 @@ mod test {
     use crate::poly::*;
     use log::debug;
 
-    use super::super::inspire_util::test_params;
     use super::*;
+    use crate::pir::utils::test_params;
     use test_log::test;
 
     #[test]

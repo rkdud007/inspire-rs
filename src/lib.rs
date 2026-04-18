@@ -1,31 +1,18 @@
-pub mod aligned_memory;
-pub mod arith;
-pub mod bits;
-pub mod client;
-pub mod commons;
-pub mod convolution;
+pub mod core;
 pub mod dataset;
-pub mod discrete_gaussian;
-pub mod gadget;
-pub mod gpu;
-#[allow(dead_code)]
-pub(crate) mod inspire_util;
-pub mod kem;
-pub mod kv;
-pub mod lwe;
-pub mod matmul;
-pub mod modulus_switch;
-pub mod noise_analysis;
-pub mod noise_estimate;
-pub mod ntt;
-pub mod number_theory;
-pub mod packing;
-pub mod params;
 pub mod pir;
-pub mod poly;
-pub mod server;
-pub mod transpose;
-pub mod util;
+pub mod protocol;
+
+pub use core::{
+    aligned_memory, arith, bits, discrete_gaussian, gadget, lwe, noise_analysis, noise_estimate,
+    ntt, number_theory, params, poly, transpose, util,
+};
+pub use dataset::kem;
+pub use pir::gpu;
+pub use pir::keyword as kv;
+pub use pir::{client::base as client, server::base as server};
+pub use pir::{convolution, matmul, modulus_switch, packing};
+pub use protocol::wire as commons;
 
 pub use dataset::{
     DATASET_MAGIC, Dataset, DatasetRecord, DatasetWriter, KEM_ML_KEM_512, KEM_ML_KEM_768,

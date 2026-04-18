@@ -1,4 +1,3 @@
-use super::packing::PackingType;
 use crate::aligned_memory::AlignedMemory64;
 use crate::arith::log2_ceil;
 use crate::packing::*;

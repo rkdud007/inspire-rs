@@ -11,9 +11,10 @@ use crate::{
 
 use crate::packing::PackingType;
 
-use super::scheme::*;
 use crate::convolution::negacyclic_matrix_u32;
-use crate::{inspire_util::*, lwe::*, noise_analysis::measure_noise_width_squared};
+use crate::pir::scheme::*;
+use crate::pir::utils::*;
+use crate::{lwe::*, noise_analysis::measure_noise_width_squared};
 
 pub fn rlwe_to_lwe<'a>(params: &'a Params, ct: &PolyMatrixRaw<'a>, how_many: usize) -> Vec<u64> {
     let a = ct.get_poly(0, 0);

@@ -19,7 +19,7 @@ fn compile_cuda(cuda_path: &str, out_dir: &str, src: &str, name: &str) {
             "-arch=sm_90",
             "--default-stream",
             "per-thread",
-            "-Isrc/cuda", // for common.h
+            "-Inative/cuda", // for common.h
         ])
         .status()
         .unwrap_or_else(|e| panic!("Failed to run nvcc for {}: {}", src, e));
@@ -42,10 +42,10 @@ fn compile_cuda(cuda_path: &str, out_dir: &str, src: &str, name: &str) {
 
 fn main() {
     // Compile C++ matmul (portable)
-    println!("cargo:rerun-if-changed=src/matmul.cpp");
+    println!("cargo:rerun-if-changed=native/matmul.cpp");
     cc::Build::new()
         .cpp(true)
-        .file("src/matmul.cpp")
+        .file("native/matmul.cpp")
         .flag("-O3")
         .flag("-march=native")
         .flag("-std=c++11")
@@ -58,53 +58,53 @@ fn main() {
         let out_dir = std::env::var("OUT_DIR").unwrap();
 
         // Compile CUDA kernels
-        println!("cargo:rerun-if-changed=src/cuda/common.h");
+        println!("cargo:rerun-if-changed=native/cuda/common.h");
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/encode_kernel.cu",
+            "native/cuda/encode_kernel.cu",
             "encode_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/packing_kernel.cu",
+            "native/cuda/packing_kernel.cu",
             "packing_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/gemv_kernel.cu",
+            "native/cuda/gemv_kernel.cu",
             "gemv_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/packing_online_kernel.cu",
+            "native/cuda/packing_online_kernel.cu",
             "packing_online_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/rotation_kernel.cu",
+            "native/cuda/rotation_kernel.cu",
             "rotation_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/hint_kernel.cu",
+            "native/cuda/hint_kernel.cu",
             "hint_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/prep_pack_kernel.cu",
+            "native/cuda/prep_pack_kernel.cu",
             "prep_pack_kernel",
         );
         compile_cuda(
             &cuda_path,
             &out_dir,
-            "src/cuda/collapse_kernel.cu",
+            "native/cuda/collapse_kernel.cu",
             "collapse_kernel",
         );
 

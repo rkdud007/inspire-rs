@@ -16,7 +16,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::str::FromStr;
 
-use crate::inspire_util::*;
+use super::utils::*;
 use crate::pir::client::*;
 use crate::pir::measurement::*;
 

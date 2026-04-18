@@ -3,7 +3,7 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::discrete_gaussian::*;
 
-use super::convolution::negacyclic_matrix_u32;
+use crate::convolution::negacyclic_matrix_u32;
 
 #[derive(Clone, Debug)]
 pub struct LWEParams {

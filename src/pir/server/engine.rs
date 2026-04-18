@@ -19,23 +19,22 @@ use crate::{arith::*, client::*, params::*, poly::*};
 use rayon::prelude::*;
 
 #[allow(unused_imports)]
-use super::measurement::{Measurement, get_size_bytes_one};
-#[allow(unused_imports)]
 use crate::convolution::naive_multiply_matrices;
 #[cfg(feature = "gpu")]
 use crate::gpu::hint as cuda_hint;
+#[allow(unused_imports)]
+use crate::pir::measurement::{Measurement, get_size_bytes_one};
 
-#[cfg(all(target_arch = "x86_64", feature = "gpu"))]
-use super::params::GetQPrime;
-use super::{client::*, scheme::*};
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
 use crate::gpu::kernel::*;
+#[cfg(all(target_arch = "x86_64", feature = "gpu"))]
+use crate::pir::params::GetQPrime;
+use crate::pir::{client::*, scheme::*};
 #[allow(unused_imports)]
 use crate::{
     bits::*,
     convolution::{Convolution, negacyclic_perm_u32},
-    inspire_util::*,
     lwe::*,
     matmul::matmul_vec_packed,
     modulus_switch::ModulusSwitch,
@@ -472,14 +471,14 @@ where
                     if row == db_rows_poly - 1 {
                         add_into(&mut sum, &prod);
                     } else {
-                        add_into_no_reduce(&mut sum, &prod);
+                        crate::pir::utils::add_into_no_reduce(&mut sum, &prod);
                     }
                 }
 
                 let sum_raw = sum.raw();
 
                 if seed_idx == SEED_0 && (protocol_type == ProtocolType::DoublePIR) {
-                    negacyclic_perm(sum_raw.get_poly(0, 0), 0, params.modulus)
+                    crate::pir::utils::negacyclic_perm(sum_raw.get_poly(0, 0), 0, params.modulus)
                 } else {
                     sum_raw.as_slice().to_vec()
                 }
@@ -519,10 +518,10 @@ where
             //     negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus);
             // let query_raw_transformed = query_raw.get_poly(0, 0);
             let query_raw_transformed = if public_seed_idx == SEED_0 {
-                negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus)
+                crate::pir::utils::negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus)
                 // query_raw.get_poly(0, 0).to_owned()
             } else {
-                negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus)
+                crate::pir::utils::negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus)
             };
             let mut query_transformed_pol = PolyMatrixRaw::zero(self.params, 1, 1);
             query_transformed_pol
@@ -1949,7 +1948,7 @@ where
                 for k in 0..params.poly_len {
                     poly.push(hint_1_combined[k * out_rows + j]);
                 }
-                let nega = negacyclic_perm(&poly, 0, params.modulus);
+                let nega = crate::pir::utils::negacyclic_perm(&poly, 0, params.modulus);
 
                 rlwe_ct.get_poly_mut(0, 0).copy_from_slice(&nega);
 
@@ -2326,7 +2325,7 @@ where
             for k in 0..params.poly_len {
                 poly.push(hint_1_combined[k * smaller_db_total_num_cols_rounded_up + j]);
             }
-            let nega = negacyclic_perm(&poly, 0, params.modulus);
+            let nega = crate::pir::utils::negacyclic_perm(&poly, 0, params.modulus);
 
             rlwe_ct.get_poly_mut(0, 0).copy_from_slice(&nega);
             rlwe_ct.get_poly_mut(1, 0)[0] = response[j];

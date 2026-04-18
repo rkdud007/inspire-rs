@@ -209,10 +209,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::poly::*;
-
-    use super::super::transpose::transpose_generic;
     use super::*;
+    use crate::transpose::transpose_generic;
 
     #[test]
     fn test_negacyclic_mul_db_col() {
