@@ -108,9 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::init(&params);
     let sk_reg_owned = client.get_sk_reg().clone();
-    let y_client = YClient::new(&client, &params);
+    let y_client = YClient::new(client);
     let keyword_client = KeywordClient::from_handshake(
-        &params,
         &y_client,
         &handshake,
         KeywordClientConfig {

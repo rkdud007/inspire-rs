@@ -295,7 +295,7 @@ pub fn run_simple_ypir_on_params(
         let pub_params_size = packing_keys.get_size_bytes();
         debug!("pub params size: {} bytes", pub_params_size);
 
-        let y_client = YClient::new(&mut client, &params);
+        let y_client = YClient::new(client);
         let query_row =
             y_client.generate_query_over_prime(SEED_0, params.db_dim_1, packing_type, target_row);
         assert_eq!(query_row.len(), (params.poly_len + 1) * db_rows);
@@ -613,7 +613,7 @@ pub fn run_ypir_on_params(
         let pub_params_size = packing_keys.get_size_bytes();
         debug!("pub params size: {} bytes", pub_params_size);
 
-        let y_client = YClient::new(&mut client, &params);
+        let y_client = YClient::new(client);
         let query_row = y_client.generate_query_over_u32(SEED_0, params.db_dim_1, target_row);
         let query_row_last_row: &[u64] = &query_row[lwe_params.n * db_rows..];
         let mut aligned_query_packed = AlignedMemory64::new(query_row_last_row.len());
@@ -1013,7 +1013,7 @@ pub fn run_ypir_with_medium_payload_on_params(
             pub_params_size += packing_key.get_size_bytes();
         }
 
-        let y_client = YClient::new(&mut client, &params);
+        let y_client = YClient::new(client);
         let query_row = y_client.generate_query_over_prime(
             SEED_0,
             params.db_dim_1,

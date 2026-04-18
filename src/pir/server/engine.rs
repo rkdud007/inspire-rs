@@ -4,6 +4,8 @@ use std::arch::x86_64::*;
 use std::cmp::min;
 use std::collections::HashMap;
 #[allow(unused_imports)]
+use std::sync::Arc;
+#[allow(unused_imports)]
 use std::{marker::PhantomData, ops::Range, time::Instant};
 
 #[allow(unused_imports)]
@@ -44,7 +46,7 @@ use crate::{
 
 pub fn generate_y_constants<'a>(
     params: &'a Params,
-) -> (Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>) {
+) -> (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) {
     let mut y_constants = Vec::new();
     let mut neg_y_constants = Vec::new();
     for num_cts_log2 in 1..params.poly_len_log2 + 1 {
@@ -127,7 +129,7 @@ pub fn split_alloc(
     out
 }
 
-pub fn generate_fake_pack_pub_params<'a>(params: &'a Params) -> Vec<PolyMatrixNTT<'a>> {
+pub fn generate_fake_pack_pub_params<'a>(params: &'a Params) -> Vec<PolyMatrixNTT> {
     let pack_pub_params = raw_generate_expansion_params(
         &params,
         &PolyMatrixRaw::zero(&params, 1, 1),
@@ -139,23 +141,23 @@ pub fn generate_fake_pack_pub_params<'a>(params: &'a Params) -> Vec<PolyMatrixNT
     pack_pub_params
 }
 
-pub type Precomp<'a> = Vec<(PolyMatrixNTT<'a>, Vec<PolyMatrixNTT<'a>>, Vec<Vec<usize>>)>;
+pub type Precomp = Vec<(PolyMatrixNTT, Vec<PolyMatrixNTT>, Vec<Vec<usize>>)>;
 
 #[derive(Clone)]
 pub struct OfflinePrecomputedValues<'a> {
     // pub hint_0: Vec<u64>,
     pub hint_1: Vec<u64>,
-    pub pseudorandom_query_1: Vec<PolyMatrixNTT<'a>>,
-    pub y_constants: (Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-    pub smaller_server: Option<YServer<'a, u16>>,
-    // pub vec_prepacked_lwe: Vec<Vec<Vec<PolyMatrixNTT<'a>>>>,
-    pub fake_pack_pub_params: Vec<PolyMatrixNTT<'a>>,
-    pub precomp: Precomp<'a>,
-    pub precomp_inspir_vec_first_layer: Vec<PrecompInsPIR<'a>>,
-    pub precomp_inspir_vec: Vec<PrecompInsPIR<'a>>,
-    // pub w_all: PolyMatrixNTT<'a>,
-    // pub w_bar_all: PolyMatrixNTT<'a>,
-    // pub v_mask: PolyMatrixNTT<'a>,
+    pub pseudorandom_query_1: Vec<PolyMatrixNTT>,
+    pub y_constants: (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+    pub smaller_server: Option<YServer<u16>>,
+    // pub vec_prepacked_lwe: Vec<Vec<Vec<PolyMatrixNTT>>>,
+    pub fake_pack_pub_params: Vec<PolyMatrixNTT>,
+    pub precomp: Precomp,
+    pub precomp_inspir_vec_first_layer: Vec<PrecompInsPIR>,
+    pub precomp_inspir_vec: Vec<PrecompInsPIR>,
+    // pub w_all: PolyMatrixNTT,
+    // pub w_bar_all: PolyMatrixNTT,
+    // pub v_mask: PolyMatrixNTT,
     pub offline_packing_keys: OfflinePackingKeys<'a>,
 }
 
@@ -172,10 +174,10 @@ impl Response {
 }
 
 #[derive(Clone)]
-pub struct YServer<'a, T: Sync> {
-    pub params: &'a Params,
-    pub packing_params_set: HashMap<usize, PackParams<'a>>,
-    pub half_packing_params_set: HashMap<usize, PackParams<'a>>,
+pub struct YServer<T: Sync> {
+    pub params: Arc<Params>,
+    pub packing_params_set: HashMap<usize, PackParams>,
+    pub half_packing_params_set: HashMap<usize, PackParams>,
     pub smaller_params: Params,
     pub db_buf_aligned: AlignedMemory64, // db_buf: Vec<u8>, // stored transposed
     pub phantom: PhantomData<T>,
@@ -185,14 +187,14 @@ pub struct YServer<'a, T: Sync> {
 }
 
 #[cfg(all(target_arch = "x86_64", feature = "gpu"))]
-impl<'a, T: Sync> YServer<'a, T>
+impl<T: Sync> YServer<T>
 where
     T: Sized + Copy + ToU64 + Default + std::marker::Sync,
     *const T: ToM512,
     u64: From<T>,
 {
-    pub fn new<'b, I>(
-        params: &'a Params,
+    pub fn new<I>(
+        params: &Params,
         mut db: I,
         protocol_type: ProtocolType,
         second_level_packing_mask: PackingType,
@@ -283,7 +285,7 @@ where
         }
 
         Self {
-            params,
+            params: Arc::new(params.clone()),
             packing_params_set: packing_params_set,
             half_packing_params_set: half_packing_params_set,
             smaller_params,
@@ -341,7 +343,7 @@ where
         }
 
         Self {
-            params,
+            params: Arc::new(params.clone()),
             packing_params_set: HashMap::new(),
             half_packing_params_set: HashMap::new(),
             smaller_params: params.clone(),
@@ -497,10 +499,10 @@ where
         res
     }
 
-    pub fn generate_pseudorandom_query(&self, public_seed_idx: u8) -> Vec<PolyMatrixNTT<'a>> {
+    pub fn generate_pseudorandom_query(&self, public_seed_idx: u8) -> Vec<PolyMatrixNTT> {
         let mut client = Client::init(&self.params);
         client.generate_secret_keys();
-        let y_client = YClient::new(&mut client, &self.params);
+        let y_client = YClient::new(client);
         let query = y_client.generate_query_impl(
             public_seed_idx,
             self.params.db_dim_1,
@@ -738,7 +740,7 @@ where
         let t0 = Instant::now();
 
         // Prepacked LWE is only needed for CPU path
-        let prepacked_lwe: Vec<Vec<PolyMatrixNTT<'_>>>;
+        let prepacked_lwe: Vec<Vec<PolyMatrixNTT>>;
 
         if use_gpu_prep_pack {
             // GPU-fused path: hint stays on device, prep_pack runs on GPU
@@ -815,9 +817,9 @@ where
         };
         let _ = t2.elapsed();
 
-        let mut y_constants: (Vec<PolyMatrixNTT<'_>>, Vec<PolyMatrixNTT<'_>>) =
+        let mut y_constants: (Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>) =
             (Vec::new(), Vec::new());
-        let mut fake_pack_pub_params: Vec<PolyMatrixNTT<'_>> = Vec::new();
+        let mut fake_pack_pub_params: Vec<PolyMatrixNTT> = Vec::new();
 
         if self.second_level_packing_mask == PackingType::CDKS {
             y_constants = generate_y_constants(&params);
@@ -1689,7 +1691,7 @@ where
         gamma: usize,
         first_dim_queries_packed: &[u64],
         offline_vals: &OfflinePrecomputedValues<'a>,
-        packing_keys: &mut PackingKeys<'a>,
+        packing_keys: &mut PackingKeys,
         measurement: Option<&mut Measurement>,
     ) -> Vec<Vec<u8>> {
         assert_eq!(self.protocol_type, ProtocolType::SimplePIR);
@@ -1779,7 +1781,7 @@ where
     pub fn perform_online_computation(
         &self,
         gamma: usize,
-        packing_keys: &mut PackingKeys<'a>,
+        packing_keys: &mut PackingKeys,
         offline_vals: &mut OfflinePrecomputedValues<'a>,
         first_dim_queries_packed: &[u32],
         second_dim_queries: &[&[u64]],
@@ -2118,7 +2120,7 @@ where
         offline_vals: &mut OfflinePrecomputedValues<'a>,
         first_dim_queries_packed: &[u64],
         second_dim_queries: &[&[u64]],
-        mut packing_keys_set: HashMap<usize, PackingKeys<'a>>,
+        mut packing_keys_set: HashMap<usize, PackingKeys>,
         gammas: Vec<usize>,
         mut measurement: Option<&mut Measurement>,
         // ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {

@@ -325,7 +325,7 @@ pub fn gpu_packing_online_run<'a>(
     precomp_inspir_vec: &[PrecompInsPIR<'a>],
     b_values: &[u64],
     gamma: usize,
-) -> Vec<PolyMatrixRaw<'a>> {
+) -> Vec<PolyMatrixRaw> {
     if !GPU_PRECOMP_UPLOADED.load(Ordering::SeqCst) || !GPU_KEYS_UPLOADED.load(Ordering::SeqCst) {
         panic!("GPU packing data not uploaded! Call setup_precomp and upload_keys first.");
     }

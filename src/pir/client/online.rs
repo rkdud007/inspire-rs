@@ -1,5 +1,4 @@
 use std::cmp::min;
-
 use log::debug;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -16,7 +15,7 @@ use crate::pir::scheme::*;
 use crate::pir::utils::*;
 use crate::{lwe::*, noise_analysis::measure_noise_width_squared};
 
-pub fn rlwe_to_lwe<'a>(params: &'a Params, ct: &PolyMatrixRaw<'a>, how_many: usize) -> Vec<u64> {
+pub fn rlwe_to_lwe(params: &Params, ct: &PolyMatrixRaw, how_many: usize) -> Vec<u64> {
     let a = ct.get_poly(0, 0);
     let mut negacylic_a = negacyclic_matrix(&a, params.modulus, how_many);
     negacylic_a.extend(&ct.get_poly(1, 0)[0..how_many]);
@@ -52,12 +51,12 @@ pub fn pack_query(params: &Params, query: &[u64]) -> AlignedMemory64 {
     aligned_query_packed
 }
 
-pub fn get_reg_sample<'a>(
-    params: &'a Params,
-    sk_reg: &PolyMatrixRaw<'a>,
+pub fn get_reg_sample(
+    params: &Params,
+    sk_reg: &PolyMatrixRaw,
     rng: &mut ChaCha20Rng,
     rng_pub: &mut ChaCha20Rng,
-) -> PolyMatrixNTT<'a> {
+) -> PolyMatrixNTT {
     let a = PolyMatrixRaw::random_rng(params, 1, 1, rng_pub);
     let e = PolyMatrixRaw::noise(
         params,
@@ -74,13 +73,13 @@ pub fn get_reg_sample<'a>(
     p
 }
 
-pub fn get_fresh_reg_public_key<'a>(
-    params: &'a Params,
-    sk_reg: &PolyMatrixRaw<'a>,
+pub fn get_fresh_reg_public_key(
+    params: &Params,
+    sk_reg: &PolyMatrixRaw,
     m: usize,
     rng: &mut ChaCha20Rng,
     rng_pub: &mut ChaCha20Rng,
-) -> PolyMatrixNTT<'a> {
+) -> PolyMatrixNTT {
     let mut p = PolyMatrixNTT::zero(params, 2, m);
 
     for i in 0..m {
@@ -89,14 +88,14 @@ pub fn get_fresh_reg_public_key<'a>(
     p
 }
 
-pub fn raw_generate_expansion_params<'a>(
-    params: &'a Params,
-    sk_reg: &PolyMatrixRaw<'a>,
+pub fn raw_generate_expansion_params(
+    params: &Params,
+    sk_reg: &PolyMatrixRaw,
     num_exp: usize,
     m_exp: usize,
     rng: &mut ChaCha20Rng,
     rng_pub: &mut ChaCha20Rng,
-) -> Vec<PolyMatrixNTT<'a>> {
+) -> Vec<PolyMatrixNTT> {
     let g_exp = build_gadget(params, 1, m_exp);
     debug!("using gadget base {}", g_exp.get_poly(0, 1)[0]);
     let g_exp_ntt = g_exp.ntt();
@@ -116,12 +115,12 @@ pub fn raw_generate_expansion_params<'a>(
     res
 }
 
-pub fn decrypt_ct_reg_measured<'a>(
-    client: &Client<'a>,
-    params: &'a Params,
-    ct: &PolyMatrixNTT<'a>,
+pub fn decrypt_ct_reg_measured(
+    client: &Client,
+    params: &Params,
+    ct: &PolyMatrixNTT,
     coeffs_to_measure: usize,
-) -> PolyMatrixRaw<'a> {
+) -> PolyMatrixRaw {
     let dec_result = client.decrypt_matrix_reg(ct).raw();
 
     let mut dec_rescaled = PolyMatrixRaw::zero(&params, dec_result.rows, dec_result.cols);
@@ -136,10 +135,10 @@ pub fn decrypt_ct_reg_measured<'a>(
     dec_rescaled
 }
 
-pub fn ct_reg_measure<'a>(
-    client: &Client<'a>,
-    params: &'a Params,
-    ct: &PolyMatrixNTT<'a>,
+pub fn ct_reg_measure(
+    client: &Client,
+    params: &Params,
+    ct: &PolyMatrixNTT,
     coeffs_to_measure: usize,
 ) -> f64 {
     let dec_result = client.decrypt_matrix_reg(ct).raw();
@@ -157,9 +156,8 @@ pub fn ct_reg_measure<'a>(
     // dec_rescaled
 }
 
-pub struct YClient<'a> {
-    inner: &'a Client<'a>,
-    params: &'a Params,
+pub struct YClient {
+    inner: Client,
     lwe_client: LWEClient,
 }
 
@@ -201,11 +199,10 @@ pub fn generate_matrix_ring(
     out
 }
 
-impl<'a> YClient<'a> {
-    pub fn new(inner: &'a Client<'a>, params: &'a Params) -> Self {
+impl YClient {
+    pub fn new(inner: Client) -> Self {
         Self {
             inner,
-            params,
             lwe_client: LWEClient::new(LWEParams::default()),
         }
     }
@@ -214,12 +211,16 @@ impl<'a> YClient<'a> {
         &self.lwe_client
     }
 
-    fn rlwes_to_lwes(&self, ct: &[PolyMatrixRaw<'a>], how_many: usize) -> Vec<u64> {
+    pub fn params(&self) -> &Params {
+        self.inner.params()
+    }
+
+    fn rlwes_to_lwes(&self, ct: &[PolyMatrixRaw], how_many: usize) -> Vec<u64> {
         let v = ct
             .iter()
-            .map(|ct| rlwe_to_lwe(self.params, ct, how_many))
+            .map(|ct| rlwe_to_lwe(self.params(), ct, how_many))
             .collect::<Vec<_>>();
-        concat_horizontal(&v, self.params.poly_len + 1, how_many) //self.params.poly_len)
+        concat_horizontal(&v, self.params().poly_len + 1, how_many) //self.params.poly_len)
     }
 
     pub fn generate_query_impl(
@@ -228,7 +229,7 @@ impl<'a> YClient<'a> {
         dim_log2: usize,
         packing_type: PackingType,
         index: usize,
-    ) -> Vec<PolyMatrixRaw<'a>> {
+    ) -> Vec<PolyMatrixRaw> {
         let dim_log2 = if (dim_log2 as isize) < 0 { 0 } else { dim_log2 }; // checks if dim_log2 went below zero
 
         // let db_cols = 1 << (self.params.db_dim_2 + self.params.poly_len_log2);
@@ -239,18 +240,19 @@ impl<'a> YClient<'a> {
         // Generate dim1_bits LWE samples under public randomness
         let mut out = Vec::new();
 
-        let scale_k = self.params.modulus / self.params.pt_modulus;
+        let params = self.params();
+        let scale_k = params.modulus / params.pt_modulus;
 
         for i in 0..(1 << dim_log2) {
-            let mut scalar = PolyMatrixRaw::zero(self.params, 1, 1);
-            let is_nonzero = i == (index / self.params.poly_len);
+            let mut scalar = PolyMatrixRaw::zero(params, 1, 1);
+            let is_nonzero = i == (index / params.poly_len);
 
             if is_nonzero {
-                scalar.data[index % self.params.poly_len] = if packing_type == PackingType::CDKS {
+                scalar.data[index % params.poly_len] = if packing_type == PackingType::CDKS {
                     multiply_uint_mod(
-                        invert_uint_mod(self.params.poly_len as u64, self.params.modulus).unwrap(),
+                        invert_uint_mod(params.poly_len as u64, params.modulus).unwrap(),
                         scale_k,
-                        self.params.modulus,
+                        params.modulus,
                     )
                 } else {
                     scale_k
@@ -266,7 +268,7 @@ impl<'a> YClient<'a> {
                 let factor = if packing_type == PackingType::InspiRING {
                     1
                 } else {
-                    invert_uint_mod(self.params.poly_len as u64, self.params.modulus).unwrap()
+                    invert_uint_mod(params.poly_len as u64, params.modulus).unwrap()
                 };
                 self.inner.encrypt_matrix_scaled_reg(
                     &scalar.ntt(),
@@ -291,7 +293,7 @@ impl<'a> YClient<'a> {
         index_row: usize,
     ) -> Vec<u64> {
         let lwe_params = LWEParams::default();
-        let dim = 1 << (dim_log2 + self.params.poly_len_log2);
+        let dim = 1 << (dim_log2 + self.params().poly_len_log2);
 
         // lwes must be (n + 1) x (dim) matrix
         let mut lwes = vec![0u64; (lwe_params.n + 1) * dim];
@@ -328,7 +330,7 @@ impl<'a> YClient<'a> {
         index_row: usize,
     ) -> Vec<u64> {
         let out = self.generate_query_impl(public_seed_idx, dim_log2, packing_type, index_row);
-        let how_many = self.params.poly_len / (1 << (-min(0 as isize, dim_log2 as isize)));
+        let how_many = self.params().poly_len / (1 << (-min(0 as isize, dim_log2 as isize)));
         let lwes = self.rlwes_to_lwes(&out, how_many);
         lwes
     }
@@ -343,7 +345,7 @@ impl<'a> YClient<'a> {
         index_row: usize,
     ) -> Vec<u64> {
         let rlwes = self.generate_query_impl(public_seed_idx, dim_log2, packing_type, index_row);
-        let how_many = self.params.poly_len / (1 << (-min(0 as isize, dim_log2 as isize)));
+        let how_many = self.params().poly_len / (1 << (-min(0 as isize, dim_log2 as isize)));
         let num_rlwes = rlwes.len();
         let total_cols = num_rlwes * how_many;
         let mut b_row = Vec::with_capacity(total_cols);
@@ -356,31 +358,32 @@ impl<'a> YClient<'a> {
 
     pub fn decode_response(&self, response: &[u64]) -> Vec<u64> {
         debug!("Decoding response: {:?}", &response[..16]);
-        let db_cols = 1 << (self.params.db_dim_2 + self.params.poly_len_log2);
+        let params = self.params();
+        let db_cols = 1 << (params.db_dim_2 + params.poly_len_log2);
 
         let sk = self.inner.get_sk_reg().as_slice().to_vec();
 
         let mut out = Vec::new();
         for col in 0..db_cols {
             let mut sum = 0u128;
-            for i in 0..self.params.poly_len {
+            for i in 0..params.poly_len {
                 let v1 = response[i * db_cols + col];
                 let v2 = sk[i];
                 sum += v1 as u128 * v2 as u128;
             }
 
-            sum += response[self.params.poly_len * db_cols + col] as u128;
+            sum += response[params.poly_len * db_cols + col] as u128;
 
-            let result = (sum % self.params.modulus as u128) as u64;
-            let result_rescaled = rescale(result, self.params.modulus, self.params.pt_modulus);
+            let result = (sum % params.modulus as u128) as u64;
+            let result_rescaled = rescale(result, params.modulus, params.pt_modulus);
             out.push(result_rescaled);
         }
 
         out
     }
 
-    pub fn client(&self) -> &Client<'a> {
-        self.inner
+    pub fn client(&self) -> &Client {
+        &self.inner
     }
 }
 

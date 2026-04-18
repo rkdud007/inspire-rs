@@ -4,6 +4,7 @@ use std::net::TcpStream;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 use crate::commons::{
     DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload,
@@ -42,11 +43,11 @@ pub fn build_cuckoo_table(dataset: &Dataset, num_items: usize) -> CuckooTable {
     table
 }
 
-pub struct KeywordServer<'a> {
+pub struct KeywordServer {
     table: CuckooTable,
-    params: &'a Params,
-    pack_params: PackParams<'a>,
-    precomp_inspir_vec: Vec<PrecompInsPIR<'a>>,
+    params: Arc<Params>,
+    pack_params: PackParams,
+    precomp_inspir_vec: Vec<PrecompInsPIR>,
     num_items: usize,
     entry_size: usize,
     dim0: usize,
@@ -60,17 +61,18 @@ pub struct KeywordServer<'a> {
     rlwe_q_prime_2: u64,
 }
 
-impl<'a> KeywordServer<'a> {
+impl KeywordServer {
     pub fn new(
         table: CuckooTable,
         params: &'a Params,
-        precomp_inspir_vec: Vec<PrecompInsPIR<'a>>,
+        precomp_inspir_vec: Vec<PrecompInsPIR>,
         num_items: usize,
         entry_size: usize,
         dim0: usize,
         kem_name: String,
         interpolate_degree: usize,
     ) -> Self {
+        let params = Arc::new(params.clone());
         let gamma = params.poly_len;
         let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
         let db_cols = params.instances * params.poly_len;
@@ -131,7 +133,8 @@ impl<'a> KeywordServer<'a> {
             ));
         }
 
-        let decoded_query = deserialize_keyword_query(self.params, &self.pack_params, query_bytes);
+        let decoded_query =
+            deserialize_keyword_query(self.params.as_ref(), &self.pack_params, query_bytes);
         cuda_packing_online::gpu_expand_and_set_keys(
             decoded_query
                 .packing_keys
@@ -143,17 +146,17 @@ impl<'a> KeywordServer<'a> {
                 .z_body_condensed
                 .as_ref()
                 .unwrap(),
-            self.params,
+            self.params.as_ref(),
         );
         let DecodedKeywordQuery { queries, .. } = decoded_query;
 
-        let rgsw_fold_and_switch = |ct_gsw_body: &PolyMatrixNTT<'_>,
-                                    packed: &[PolyMatrixRaw<'_>]|
+        let rgsw_fold_and_switch = |ct_gsw_body: &PolyMatrixNTT,
+                                    packed: &[PolyMatrixRaw]|
          -> Vec<u8> {
             let mut ct_gsw = ct_gsw_body.pad_top(1);
             for i in 0..ct_gsw.cols {
                 let a = PolyMatrixRaw::random_rng(
-                    self.params,
+                    self.params.as_ref(),
                     1,
                     1,
                     &mut ChaCha20Rng::from_seed(RGSW_SEEDS[i]),
@@ -162,14 +165,14 @@ impl<'a> KeywordServer<'a> {
             }
 
             let ell = ct_gsw.cols / 2;
-            let rgsw_results: Vec<PolyMatrixRaw<'_>> = (0..self.c)
+            let rgsw_results: Vec<PolyMatrixRaw> = (0..self.c)
                 .into_par_iter()
                 .map(|which_poly| {
-                    let mut ginv_c = PolyMatrixRaw::zero(self.params, 2 * ell, 1);
-                    let mut ginv_c_ntt = PolyMatrixNTT::zero(self.params, 2 * ell, 1);
-                    let mut sum = PolyMatrixRaw::zero(self.params, 2, 1);
+                    let mut ginv_c = PolyMatrixRaw::zero(self.params.as_ref(), 2 * ell, 1);
+                    let mut ginv_c_ntt = PolyMatrixNTT::zero(self.params.as_ref(), 2 * ell, 1);
+                    let mut sum = PolyMatrixRaw::zero(self.params.as_ref(), 2, 1);
                     for i in (0..self.interpolate_degree).rev() {
-                        let mut prod = PolyMatrixNTT::zero(self.params, 2, 1);
+                        let mut prod = PolyMatrixNTT::zero(self.params.as_ref(), 2, 1);
                         gadget_invert(&mut ginv_c, &sum);
                         to_ntt(&mut ginv_c_ntt, &ginv_c);
                         multiply(&mut prod, &ct_gsw, &ginv_c_ntt);
@@ -203,7 +206,7 @@ impl<'a> KeywordServer<'a> {
                 self.params.barrett_cr_1_modulus,
             );
             cuda_packing_online::gpu_packing_online_run(
-                self.params,
+                self.params.as_ref(),
                 &self.precomp_inspir_vec,
                 intermediate.as_slice(),
                 self.gamma,

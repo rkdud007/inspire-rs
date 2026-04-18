@@ -6,7 +6,6 @@ use crate::gadget::get_bits_per;
 use crate::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
 use crate::modulus_switch::ModulusSwitch;
 use crate::packing::{PackParams, PackingKeys, PackingType};
-use crate::params::Params;
 use crate::pir::client::{YClient, decrypt_ct_reg_measured, pack_query};
 use crate::pir::params::GetQPrime;
 use crate::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
@@ -30,8 +29,7 @@ impl Default for KeywordClientConfig {
 }
 
 pub struct KeywordClient<'a> {
-    y_client: &'a YClient<'a>,
-    params: &'a Params,
+    y_client: &'a YClient,
     keyword: KeywordPirHandshake,
     kem_name: String,
     packing_type: PackingType,
@@ -47,11 +45,11 @@ pub struct KeywordClient<'a> {
 
 impl<'a> KeywordClient<'a> {
     pub fn from_handshake(
-        params: &'a Params,
-        y_client: &'a YClient<'a>,
+        y_client: &'a YClient,
         handshake: &HandshakeParams,
         config: KeywordClientConfig,
     ) -> Result<Self, String> {
+        let params = y_client.params();
         let keyword = handshake
             .keyword_pir
             .clone()
@@ -89,9 +87,11 @@ impl<'a> KeywordClient<'a> {
             KEM_ML_KEM_768.to_string()
         };
 
+        let rlwe_q_prime_1 = params.get_q_prime_1();
+        let rlwe_q_prime_2 = params.get_q_prime_2();
+
         Ok(Self {
             y_client,
-            params,
             keyword,
             kem_name,
             packing_type: config.packing_type,
@@ -101,13 +101,17 @@ impl<'a> KeywordClient<'a> {
             c,
             per: handshake.num_items / db_rows,
             item_size_elements,
-            rlwe_q_prime_1: params.get_q_prime_1(),
-            rlwe_q_prime_2: params.get_q_prime_2(),
+            rlwe_q_prime_1,
+            rlwe_q_prime_2,
         })
     }
 
-    pub fn packing_params(&self) -> PackParams<'a> {
-        PackParams::new_fast(self.params, self.gamma)
+    fn params(&self) -> &crate::params::Params {
+        self.y_client.params()
+    }
+
+    pub fn packing_params(&self) -> PackParams {
+        PackParams::new_fast(self.params(), self.gamma)
     }
 
     pub fn positions(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> Vec<usize> {
@@ -117,23 +121,23 @@ impl<'a> KeywordClient<'a> {
         hasher.all_positions(query_id)
     }
 
-    fn build_query_for_index(&self, which_item: usize) -> KeywordQuery<'a> {
+    fn build_query_for_index(&self, which_item: usize) -> KeywordQuery {
         let target_row = which_item / self.per;
         let target_col = (which_item % self.per) * self.item_size_elements;
         let target_sub_col = (target_col % (self.interpolate_degree * self.gamma)) / self.gamma;
 
-        let mut ct_gsw_body = PolyMatrixNTT::zero(self.params, 1, 2 * self.params.t_gsw);
-        let bits_per = get_bits_per(self.params, self.params.t_gsw);
-        for j in 0..self.params.t_gsw {
-            let mut sigma = PolyMatrixRaw::zero(self.params, 1, 1);
-            let exponent = (2 * self.params.poly_len * target_sub_col / self.interpolate_degree)
-                % (2 * self.params.poly_len);
-            sigma.get_poly_mut(0, 0)[exponent % self.params.poly_len] =
-                if exponent < self.params.poly_len {
-                    1u64 << (bits_per * j)
-                } else {
-                    self.params.modulus - (1u64 << (bits_per * j))
-                };
+        let params = self.params();
+        let mut ct_gsw_body = PolyMatrixNTT::zero(params, 1, 2 * params.t_gsw);
+        let bits_per = get_bits_per(params, params.t_gsw);
+        for j in 0..params.t_gsw {
+            let mut sigma = PolyMatrixRaw::zero(params, 1, 1);
+            let exponent = (2 * params.poly_len * target_sub_col / self.interpolate_degree)
+                % (2 * params.poly_len);
+            sigma.get_poly_mut(0, 0)[exponent % params.poly_len] = if exponent < params.poly_len {
+                1u64 << (bits_per * j)
+            } else {
+                params.modulus - (1u64 << (bits_per * j))
+            };
             let sigma_ntt = sigma.ntt();
             let ct = self.y_client.client().encrypt_matrix_reg(
                 &sigma_ntt,
@@ -153,11 +157,11 @@ impl<'a> KeywordClient<'a> {
 
         let query_b_values = self.y_client.generate_query_b_values(
             crate::pir::scheme::SEED_0,
-            self.params.db_dim_1,
+            params.db_dim_1,
             self.packing_type,
             target_row,
         );
-        let packed_query_row = pack_query(self.params, &query_b_values);
+        let packed_query_row = pack_query(params, &query_b_values);
         KeywordQuery {
             packed_query_row,
             ct_gsw_body,
@@ -166,14 +170,14 @@ impl<'a> KeywordClient<'a> {
 
     pub fn serialize_request(
         &self,
-        packing_keys: &mut PackingKeys<'a>,
+        packing_keys: &mut PackingKeys,
         positions: &[usize],
     ) -> Vec<u8> {
-        let queries: Vec<KeywordQuery<'a>> = positions
+        let queries: Vec<KeywordQuery> = positions
             .iter()
             .map(|&bucket_idx| self.build_query_for_index(bucket_idx))
             .collect();
-        serialize_keyword_query(self.params, packing_keys, &queries)
+        serialize_keyword_query(self.params(), packing_keys, &queries)
     }
 
     fn decrypt_response_values(&self, response_data: &[u8]) -> Vec<u64> {
@@ -184,9 +188,10 @@ impl<'a> KeywordClient<'a> {
             .collect();
 
         let mut results = Vec::new();
+        let params = self.params();
         for which_poly in 0..self.c {
             let sum = PolyMatrixRaw::recover_how_many(
-                self.params,
+                params,
                 self.rlwe_q_prime_1,
                 self.rlwe_q_prime_2,
                 self.gamma,
@@ -198,13 +203,8 @@ impl<'a> KeywordClient<'a> {
         results
             .iter()
             .flat_map(|ct| {
-                decrypt_ct_reg_measured(
-                    self.y_client.client(),
-                    self.params,
-                    &ct.ntt(),
-                    self.params.poly_len,
-                )
-                .as_slice()[..self.gamma]
+                decrypt_ct_reg_measured(self.y_client.client(), params, &ct.ntt(), params.poly_len)
+                    .as_slice()[..self.gamma]
                     .to_vec()
             })
             .collect()

@@ -179,8 +179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smaller_params = params.clone();
     let db_buf_aligned = AlignedMemory64::new(1);
     type T = u16;
-    let y_server: &'static YServer<'static, T> = Box::leak(Box::new(YServer {
-        params,
+    let y_server: &'static YServer< T> = Box::leak(Box::new(YServer {
+        params: std::sync::Arc::new(params.clone()),
         packing_params_set,
         half_packing_params_set,
         smaller_params,

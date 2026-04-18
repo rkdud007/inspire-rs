@@ -199,9 +199,9 @@ impl YPIRSchemeParams {
 
 pub fn measure_noise_width_squared<'a>(
     params: &Params,
-    client: &Client<'a>,
-    ct: &PolyMatrixNTT<'a>,
-    pt: &PolyMatrixRaw<'a>,
+    client: &Client,
+    ct: &PolyMatrixNTT,
+    pt: &PolyMatrixRaw,
     coeffs_to_measure: usize,
 ) -> f64 {
     let m_i64 = params.modulus as i64;
@@ -238,10 +238,10 @@ pub fn measure_noise_width_squared<'a>(
 
 pub fn measure_noise_width_bits<'a>(
     params: &Params,
-    // client: &Client<'a>,
-    // ct: &PolyMatrixNTT<'a>,
-    // pt: &PolyMatrixRaw<'a>,
-    dec_result: &PolyMatrixNTT<'a>,
+    // client: &Client,
+    // ct: &PolyMatrixNTT,
+    // pt: &PolyMatrixRaw,
+    dec_result: &PolyMatrixNTT,
     coeffs_to_measure: usize,
 ) -> f64 {
     let mut dec_rescaled = PolyMatrixRaw::zero(&params, dec_result.rows, dec_result.cols);
@@ -347,7 +347,7 @@ mod tests {
 
         let mut client = Client::init(&params);
         client.generate_secret_keys();
-        let y_client = YClient::new(&mut client, &params);
+        let y_client = YClient::new(client);
         let target_idx = 0;
         let query = y_client.generate_query_over_u32(SEED_0, params.db_dim_1, target_idx);
 

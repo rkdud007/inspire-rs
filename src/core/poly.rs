@@ -6,21 +6,65 @@ use rand::distr::StandardUniform;
 use rand_chacha::ChaCha20Rng;
 use std::cell::RefCell;
 use std::ops::{Add, Mul, Neg};
+use std::sync::Arc;
 
 use crate::{aligned_memory::*, arith::*, discrete_gaussian::*, ntt::*, params::*, util::*};
 
 const SCRATCH_SPACE: usize = 8192;
 thread_local!(static SCRATCH: RefCell<AlignedMemory64> = RefCell::new(AlignedMemory64::new(SCRATCH_SPACE)));
 
-pub trait PolyMatrix<'a> {
+pub trait IntoSharedParams {
+    fn into_shared_params(self) -> Arc<Params>;
+}
+
+impl IntoSharedParams for Arc<Params> {
+    fn into_shared_params(self) -> Arc<Params> {
+        self
+    }
+}
+
+impl IntoSharedParams for &Arc<Params> {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::clone(self)
+    }
+}
+
+impl IntoSharedParams for &&Arc<Params> {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::clone(self)
+    }
+}
+
+impl IntoSharedParams for &Params {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::new(self.clone())
+    }
+}
+
+impl IntoSharedParams for &&Params {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::new((**self).clone())
+    }
+}
+
+impl IntoSharedParams for &mut Params {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::new((*self).clone())
+    }
+}
+
+impl IntoSharedParams for Params {
+    fn into_shared_params(self) -> Arc<Params> {
+        Arc::new(self)
+    }
+}
+
+pub trait PolyMatrix {
     fn is_ntt(&self) -> bool;
     fn get_rows(&self) -> usize;
     fn get_cols(&self) -> usize;
     fn get_params(&self) -> &Params;
     fn num_words(&self) -> usize;
-    fn zero(params: &'a Params, rows: usize, cols: usize) -> Self;
-    fn random(params: &'a Params, rows: usize, cols: usize) -> Self;
-    fn random_rng<T: rand::Rng>(params: &'a Params, rows: usize, cols: usize, rng: &mut T) -> Self;
     fn as_slice(&self) -> &[u64];
     fn as_mut_slice(&mut self) -> &mut [u64];
     fn zero_out(&mut self) {
@@ -78,21 +122,21 @@ pub trait PolyMatrix<'a> {
     fn pad_top(&self, pad_rows: usize) -> Self;
 }
 
-pub struct PolyMatrixRaw<'a> {
-    pub params: &'a Params,
+pub struct PolyMatrixRaw {
+    pub params: Arc<Params>,
     pub rows: usize,
     pub cols: usize,
     pub data: AlignedMemory64,
 }
 
-pub struct PolyMatrixNTT<'a> {
-    pub params: &'a Params,
+pub struct PolyMatrixNTT {
+    pub params: Arc<Params>,
     pub rows: usize,
     pub cols: usize,
     pub data: AlignedMemory64,
 }
 
-impl<'a> PolyMatrix<'a> for PolyMatrixRaw<'a> {
+impl PolyMatrix for PolyMatrixRaw {
     fn is_ntt(&self) -> bool {
         false
     }
@@ -114,40 +158,13 @@ impl<'a> PolyMatrix<'a> for PolyMatrixRaw<'a> {
     fn num_words(&self) -> usize {
         self.params.poly_len
     }
-    fn zero(params: &'a Params, rows: usize, cols: usize) -> PolyMatrixRaw<'a> {
-        let num_coeffs = rows * cols * params.poly_len;
-        let data = AlignedMemory64::new(num_coeffs);
-        PolyMatrixRaw {
-            params,
-            rows,
-            cols,
-            data,
-        }
-    }
-    fn random_rng<T: rand::Rng>(params: &'a Params, rows: usize, cols: usize, rng: &mut T) -> Self {
-        let mut iter = rng.sample_iter(StandardUniform);
-        let mut out = PolyMatrixRaw::zero(params, rows, cols);
-        for r in 0..rows {
-            for c in 0..cols {
-                for i in 0..params.poly_len {
-                    let val: u64 = iter.next().unwrap();
-                    out.get_poly_mut(r, c)[i] = val % params.modulus;
-                }
-            }
-        }
-        out
-    }
-    fn random(params: &'a Params, rows: usize, cols: usize) -> Self {
-        let mut rng = rand::rng();
-        Self::random_rng(params, rows, cols, &mut rng)
-    }
     fn pad_top(&self, pad_rows: usize) -> Self {
-        let mut padded = Self::zero(self.params, self.rows + pad_rows, self.cols);
+        let mut padded = Self::zero(self.params.clone(), self.rows + pad_rows, self.cols);
         padded.copy_into(&self, pad_rows, 0);
         padded
     }
     fn submatrix(&self, target_row: usize, target_col: usize, rows: usize, cols: usize) -> Self {
-        let mut m = Self::zero(self.params, rows, cols);
+        let mut m = Self::zero(self.params.clone(), rows, cols);
         assert!(target_row < self.rows);
         assert!(target_col < self.cols);
         assert!(target_row + rows <= self.rows);
@@ -163,14 +180,14 @@ impl<'a> PolyMatrix<'a> for PolyMatrixRaw<'a> {
     }
 }
 
-impl<'a> Clone for PolyMatrixRaw<'a> {
+impl Clone for PolyMatrixRaw {
     fn clone(&self) -> Self {
         let mut data_clone = AlignedMemory64::new(self.data.len());
         data_clone
             .as_mut_slice()
             .copy_from_slice(self.data.as_slice());
         PolyMatrixRaw {
-            params: self.params,
+            params: self.params.clone(),
             rows: self.rows,
             cols: self.cols,
             data: data_clone,
@@ -178,8 +195,81 @@ impl<'a> Clone for PolyMatrixRaw<'a> {
     }
 }
 
-impl<'a> PolyMatrixRaw<'a> {
-    pub fn identity(params: &'a Params, rows: usize, cols: usize) -> PolyMatrixRaw<'a> {
+impl PolyMatrixRaw {
+    pub fn zero<P: IntoSharedParams>(params: P, rows: usize, cols: usize) -> PolyMatrixRaw {
+        let params = params.into_shared_params();
+        let num_coeffs = rows * cols * params.poly_len;
+        let data = AlignedMemory64::new(num_coeffs);
+        PolyMatrixRaw {
+            params,
+            rows,
+            cols,
+            data,
+        }
+    }
+
+    pub fn random_rng<P: IntoSharedParams, T: rand::Rng>(
+        params: P,
+        rows: usize,
+        cols: usize,
+        rng: &mut T,
+    ) -> Self {
+        let params = params.into_shared_params();
+        let poly_len = params.poly_len;
+        let modulus = params.modulus;
+        let mut iter = rng.sample_iter(StandardUniform);
+        let mut out = PolyMatrixRaw::zero(params, rows, cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                for i in 0..poly_len {
+                    let val: u64 = iter.next().unwrap();
+                    out.get_poly_mut(r, c)[i] = val % modulus;
+                }
+            }
+        }
+        out
+    }
+
+    pub fn random<P: IntoSharedParams>(params: P, rows: usize, cols: usize) -> Self {
+        let mut rng = rand::rng();
+        Self::random_rng(params, rows, cols, &mut rng)
+    }
+
+    pub fn noise<P: IntoSharedParams>(
+        params: P,
+        rows: usize,
+        cols: usize,
+        dg: &DiscreteGaussian,
+        rng: &mut ChaCha20Rng,
+    ) -> Self {
+        let mut out = PolyMatrixRaw::zero(params, rows, cols);
+        dg.sample_matrix(&mut out, rng);
+        out
+    }
+
+    pub fn fast_noise<P: IntoSharedParams>(
+        params: P,
+        rows: usize,
+        cols: usize,
+        dg: &DiscreteGaussian,
+        rng: &mut ChaCha20Rng,
+    ) -> Self {
+        let params = params.into_shared_params();
+        let modulus = params.modulus;
+        let mut out = PolyMatrixRaw::zero(params, rows, cols);
+        for r in 0..out.rows {
+            for c in 0..out.cols {
+                let poly = out.get_poly_mut(r, c);
+                for z in 0..poly.len() {
+                    poly[z] = dg.fast_sample(modulus, rng);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn identity<P: IntoSharedParams>(params: P, rows: usize, cols: usize) -> PolyMatrixRaw {
+        let params = params.into_shared_params();
         let num_coeffs = rows * cols * params.poly_len;
         let mut data = AlignedMemory::new(num_coeffs);
         for r in 0..rows {
@@ -195,40 +285,13 @@ impl<'a> PolyMatrixRaw<'a> {
         }
     }
 
-    pub fn noise(
-        params: &'a Params,
-        rows: usize,
-        cols: usize,
-        dg: &DiscreteGaussian,
-        rng: &mut ChaCha20Rng,
-    ) -> Self {
-        let mut out = PolyMatrixRaw::zero(params, rows, cols);
-        dg.sample_matrix(&mut out, rng);
+    pub fn single_value<P: IntoSharedParams>(params: P, value: u64) -> PolyMatrixRaw {
+        let mut out = Self::zero(params, 1, 1);
+        out.data[0] = value;
         out
     }
 
-    pub fn fast_noise(
-        params: &'a Params,
-        rows: usize,
-        cols: usize,
-        dg: &DiscreteGaussian,
-        rng: &mut ChaCha20Rng,
-    ) -> Self {
-        let mut out = PolyMatrixRaw::zero(params, rows, cols);
-        let modulus = params.modulus;
-        for r in 0..out.rows {
-            for c in 0..out.cols {
-                let poly = out.get_poly_mut(r, c);
-                for z in 0..poly.len() {
-                    let s = dg.fast_sample(modulus, rng);
-                    poly[z] = s;
-                }
-            }
-        }
-        out
-    }
-
-    pub fn ntt(&self) -> PolyMatrixNTT<'a> {
+    pub fn ntt(&self) -> PolyMatrixNTT {
         to_ntt_alloc(&self)
     }
 
@@ -278,14 +341,9 @@ impl<'a> PolyMatrixRaw<'a> {
         data
     }
 
-    pub fn single_value(params: &'a Params, value: u64) -> PolyMatrixRaw<'a> {
-        let mut out = Self::zero(params, 1, 1);
-        out.data[0] = value;
-        out
-    }
 }
 
-impl<'a> PolyMatrix<'a> for PolyMatrixNTT<'a> {
+impl PolyMatrix for PolyMatrixNTT {
     fn is_ntt(&self) -> bool {
         true
     }
@@ -307,44 +365,14 @@ impl<'a> PolyMatrix<'a> for PolyMatrixNTT<'a> {
     fn num_words(&self) -> usize {
         self.params.poly_len * self.params.crt_count
     }
-    fn zero(params: &'a Params, rows: usize, cols: usize) -> PolyMatrixNTT<'a> {
-        let num_coeffs = rows * cols * params.poly_len * params.crt_count;
-        let data = AlignedMemory::new(num_coeffs);
-        PolyMatrixNTT {
-            params,
-            rows,
-            cols,
-            data,
-        }
-    }
-    fn random_rng<T: rand::Rng>(params: &'a Params, rows: usize, cols: usize, rng: &mut T) -> Self {
-        let mut iter = rng.sample_iter(StandardUniform);
-        let mut out = PolyMatrixNTT::zero(params, rows, cols);
-        for r in 0..rows {
-            for c in 0..cols {
-                for i in 0..params.crt_count {
-                    for j in 0..params.poly_len {
-                        let idx = calc_index(&[i, j], &[params.crt_count, params.poly_len]);
-                        let val: u64 = iter.next().unwrap();
-                        out.get_poly_mut(r, c)[idx] = val % params.moduli[i];
-                    }
-                }
-            }
-        }
-        out
-    }
-    fn random(params: &'a Params, rows: usize, cols: usize) -> Self {
-        let mut rng = rand::rng();
-        Self::random_rng(params, rows, cols, &mut rng)
-    }
     fn pad_top(&self, pad_rows: usize) -> Self {
-        let mut padded = Self::zero(self.params, self.rows + pad_rows, self.cols);
+        let mut padded = Self::zero(self.params.clone(), self.rows + pad_rows, self.cols);
         padded.copy_into(&self, pad_rows, 0);
         padded
     }
 
     fn submatrix(&self, target_row: usize, target_col: usize, rows: usize, cols: usize) -> Self {
-        let mut m = Self::zero(self.params, rows, cols);
+        let mut m = Self::zero(self.params.clone(), rows, cols);
         assert!(target_row < self.rows);
         assert!(target_col < self.cols);
         assert!(target_row + rows <= self.rows);
@@ -360,14 +388,14 @@ impl<'a> PolyMatrix<'a> for PolyMatrixNTT<'a> {
     }
 }
 
-impl<'a> Clone for PolyMatrixNTT<'a> {
+impl Clone for PolyMatrixNTT {
     fn clone(&self) -> Self {
         let mut data_clone = AlignedMemory64::new(self.data.len());
         data_clone
             .as_mut_slice()
             .copy_from_slice(self.data.as_slice());
         PolyMatrixNTT {
-            params: self.params,
+            params: self.params.clone(),
             rows: self.rows,
             cols: self.cols,
             data: data_clone,
@@ -375,13 +403,56 @@ impl<'a> Clone for PolyMatrixNTT<'a> {
     }
 }
 
-impl<'a> PolyMatrixNTT<'a> {
-    pub fn raw(&self) -> PolyMatrixRaw<'a> {
+impl PolyMatrixNTT {
+    pub fn zero<P: IntoSharedParams>(params: P, rows: usize, cols: usize) -> PolyMatrixNTT {
+        let params = params.into_shared_params();
+        let num_coeffs = rows * cols * params.poly_len * params.crt_count;
+        let data = AlignedMemory::new(num_coeffs);
+        PolyMatrixNTT {
+            params,
+            rows,
+            cols,
+            data,
+        }
+    }
+
+    pub fn random_rng<P: IntoSharedParams, T: rand::Rng>(
+        params: P,
+        rows: usize,
+        cols: usize,
+        rng: &mut T,
+    ) -> Self {
+        let params = params.into_shared_params();
+        let crt_count = params.crt_count;
+        let poly_len = params.poly_len;
+        let moduli = params.moduli;
+        let mut iter = rng.sample_iter(StandardUniform);
+        let mut out = PolyMatrixNTT::zero(params, rows, cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                for i in 0..crt_count {
+                    for j in 0..poly_len {
+                        let idx = calc_index(&[i, j], &[crt_count, poly_len]);
+                        let val: u64 = iter.next().unwrap();
+                        out.get_poly_mut(r, c)[idx] = val % moduli[i];
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn random<P: IntoSharedParams>(params: P, rows: usize, cols: usize) -> Self {
+        let mut rng = rand::rng();
+        Self::random_rng(params, rows, cols, &mut rng)
+    }
+
+    pub fn raw(&self) -> PolyMatrixRaw {
         from_ntt_alloc(&self)
     }
 }
 
-pub fn shift_rows_by_one<'a>(inp: &PolyMatrixNTT<'a>) -> PolyMatrixNTT<'a> {
+pub fn shift_rows_by_one(inp: &PolyMatrixNTT) -> PolyMatrixNTT {
     if inp.rows == 1 {
         return inp.clone();
     }
@@ -545,14 +616,14 @@ pub fn multiply(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatrixNTT) {
     assert!(res.cols == b.cols);
     assert!(a.cols == b.rows);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..b.cols {
             for z in 0..params.poly_len * params.crt_count {
                 res.get_poly_mut(i, j)[z] = 0;
             }
             for k in 0..a.cols {
-                let params = res.params;
                 let res_poly = res.get_poly_mut(i, j);
                 let pol1 = a.get_poly(i, k);
                 let pol2 = b.get_poly(k, j);
@@ -568,7 +639,8 @@ pub fn multiply(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatrixNTT) {
     assert_eq!(res.cols, b.cols);
     assert_eq!(a.cols, b.rows);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..b.cols {
             for z in 0..params.poly_len * params.crt_count {
@@ -596,7 +668,8 @@ pub fn multiply_no_reduce(
     assert_eq!(res.cols, b.cols);
     assert_eq!(a.cols, b.rows);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..b.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -615,7 +688,8 @@ pub fn add(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatrixNTT) {
     assert!(a.rows == b.rows);
     assert!(a.cols == b.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -632,7 +706,8 @@ pub fn add_raw(res: &mut PolyMatrixRaw, a: &PolyMatrixRaw, b: &PolyMatrixRaw) {
     assert_eq!(a.rows, b.rows);
     assert_eq!(a.cols, b.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -647,7 +722,8 @@ pub fn add_into(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..res.rows {
         for j in 0..res.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -661,7 +737,8 @@ pub fn sub_into(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..res.rows {
         for j in 0..res.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -671,8 +748,14 @@ pub fn sub_into(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     }
 }
 
-pub fn add_into_at(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, t_row: usize, t_col: usize) {
-    let params = res.params;
+pub fn add_into_at(
+    res: &mut PolyMatrixNTT,
+    a: &PolyMatrixNTT,
+    t_row: usize,
+    t_col: usize,
+) {
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(t_row + i, t_col + j);
@@ -686,7 +769,8 @@ pub fn invert(res: &mut PolyMatrixRaw, a: &PolyMatrixRaw) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -700,7 +784,8 @@ pub fn invert_ntt(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -710,11 +795,12 @@ pub fn invert_ntt(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     }
 }
 
-pub fn automorph<'a>(res: &mut PolyMatrixRaw<'a>, a: &PolyMatrixRaw<'a>, t: usize) {
+pub fn automorph(res: &mut PolyMatrixRaw, a: &PolyMatrixRaw, t: usize) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -724,33 +810,38 @@ pub fn automorph<'a>(res: &mut PolyMatrixRaw<'a>, a: &PolyMatrixRaw<'a>, t: usiz
     }
 }
 
-pub fn automorph_alloc<'a>(a: &PolyMatrixRaw<'a>, t: usize) -> PolyMatrixRaw<'a> {
-    let mut res = PolyMatrixRaw::zero(a.params, a.rows, a.cols);
+pub fn automorph_alloc(a: &PolyMatrixRaw, t: usize) -> PolyMatrixRaw {
+    let mut res = PolyMatrixRaw::zero(&a.params, a.rows, a.cols);
     automorph(&mut res, a, t);
     res
 }
 
-pub fn stack<'a>(a: &PolyMatrixRaw<'a>, b: &PolyMatrixRaw<'a>) -> PolyMatrixRaw<'a> {
+pub fn stack(a: &PolyMatrixRaw, b: &PolyMatrixRaw) -> PolyMatrixRaw {
     assert_eq!(a.cols, b.cols);
-    let mut c = PolyMatrixRaw::zero(a.params, a.rows + b.rows, a.cols);
+    let mut c = PolyMatrixRaw::zero(&a.params, a.rows + b.rows, a.cols);
     c.copy_into(a, 0, 0);
     c.copy_into(b, a.rows, 0);
     c
 }
 
-pub fn stack_ntt<'a>(a: &PolyMatrixNTT<'a>, b: &PolyMatrixNTT<'a>) -> PolyMatrixNTT<'a> {
+pub fn stack_ntt(a: &PolyMatrixNTT, b: &PolyMatrixNTT) -> PolyMatrixNTT {
     assert_eq!(a.cols, b.cols);
-    let mut c = PolyMatrixNTT::zero(a.params, a.rows + b.rows, a.cols);
+    let mut c = PolyMatrixNTT::zero(&a.params, a.rows + b.rows, a.cols);
     c.copy_into(a, 0, 0);
     c.copy_into(b, a.rows, 0);
     c
 }
 
-pub fn scalar_multiply(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatrixNTT) {
+pub fn scalar_multiply(
+    res: &mut PolyMatrixNTT,
+    a: &PolyMatrixNTT,
+    b: &PolyMatrixNTT,
+) {
     assert_eq!(a.rows, 1);
     assert_eq!(a.cols, 1);
 
-    let params = res.params;
+    let params = Arc::clone(&res.params);
+    let params = params.as_ref();
     let pol2 = a.get_poly(0, 0);
     for i in 0..b.rows {
         for j in 0..b.cols {
@@ -761,16 +852,13 @@ pub fn scalar_multiply(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyMatri
     }
 }
 
-pub fn scalar_multiply_alloc<'a>(
-    a: &PolyMatrixNTT<'a>,
-    b: &PolyMatrixNTT<'a>,
-) -> PolyMatrixNTT<'a> {
-    let mut res = PolyMatrixNTT::zero(b.params, b.rows, b.cols);
+pub fn scalar_multiply_alloc(a: &PolyMatrixNTT, b: &PolyMatrixNTT) -> PolyMatrixNTT {
+    let mut res = PolyMatrixNTT::zero(&b.params, b.rows, b.cols);
     scalar_multiply(&mut res, a, b);
     res
 }
 
-pub fn single_poly<'a>(params: &'a Params, val: u64) -> PolyMatrixRaw<'a> {
+pub fn single_poly<P: IntoSharedParams>(params: P, val: u64) -> PolyMatrixRaw {
     let mut res = PolyMatrixRaw::zero(params, 1, 1);
     res.get_poly_mut(0, 0)[0] = val;
     res
@@ -785,7 +873,8 @@ fn reduce_copy(params: &Params, out: &mut [u64], inp: &[u64]) {
 }
 
 pub fn to_ntt(a: &mut PolyMatrixNTT, b: &PolyMatrixRaw) {
-    let params = a.params;
+    let params = Arc::clone(&a.params);
+    let params = params.as_ref();
     for r in 0..a.rows {
         for c in 0..a.cols {
             let pol_src = b.get_poly(r, c);
@@ -797,7 +886,8 @@ pub fn to_ntt(a: &mut PolyMatrixNTT, b: &PolyMatrixRaw) {
 }
 
 pub fn to_ntt_no_reduce(a: &mut PolyMatrixNTT, b: &PolyMatrixRaw) {
-    let params = a.params;
+    let params = Arc::clone(&a.params);
+    let params = params.as_ref();
     for r in 0..a.rows {
         for c in 0..a.cols {
             let pol_src = b.get_poly(r, c);
@@ -811,14 +901,15 @@ pub fn to_ntt_no_reduce(a: &mut PolyMatrixNTT, b: &PolyMatrixRaw) {
     }
 }
 
-pub fn to_ntt_alloc<'a>(b: &PolyMatrixRaw<'a>) -> PolyMatrixNTT<'a> {
-    let mut a = PolyMatrixNTT::zero(b.params, b.rows, b.cols);
+pub fn to_ntt_alloc(b: &PolyMatrixRaw) -> PolyMatrixNTT {
+    let mut a = PolyMatrixNTT::zero(&b.params, b.rows, b.cols);
     to_ntt(&mut a, b);
     a
 }
 
 pub fn from_ntt(a: &mut PolyMatrixRaw, b: &PolyMatrixNTT) {
-    let params = a.params;
+    let params = Arc::clone(&a.params);
+    let params = params.as_ref();
     SCRATCH.with(|scratch_cell| {
         let scratch_vec = &mut *scratch_cell.borrow_mut();
         let scratch = scratch_vec.as_mut_slice();
@@ -836,11 +927,16 @@ pub fn from_ntt(a: &mut PolyMatrixRaw, b: &PolyMatrixNTT) {
     });
 }
 
-pub fn from_ntt_scratch(a: &mut PolyMatrixRaw, scratch: &mut [u64], b: &PolyMatrixNTT) {
+pub fn from_ntt_scratch(
+    a: &mut PolyMatrixRaw,
+    scratch: &mut [u64],
+    b: &PolyMatrixNTT,
+) {
     assert_eq!(b.rows, 2);
     assert_eq!(b.cols, 1);
 
-    let params = b.params;
+    let params = Arc::clone(&b.params);
+    let params = params.as_ref();
     for r in 0..b.rows {
         for c in 0..b.cols {
             let pol_src = b.get_poly(r, c);
@@ -856,57 +952,57 @@ pub fn from_ntt_scratch(a: &mut PolyMatrixRaw, scratch: &mut [u64], b: &PolyMatr
     }
 }
 
-pub fn from_ntt_alloc<'a>(b: &PolyMatrixNTT<'a>) -> PolyMatrixRaw<'a> {
-    let mut a = PolyMatrixRaw::zero(b.params, b.rows, b.cols);
+pub fn from_ntt_alloc(b: &PolyMatrixNTT) -> PolyMatrixRaw {
+    let mut a = PolyMatrixRaw::zero(&b.params, b.rows, b.cols);
     from_ntt(&mut a, b);
     a
 }
 
-impl<'a, 'b> Neg for &'b PolyMatrixRaw<'a> {
-    type Output = PolyMatrixRaw<'a>;
+impl Neg for &PolyMatrixRaw {
+    type Output = PolyMatrixRaw;
 
     fn neg(self) -> Self::Output {
-        let mut out = PolyMatrixRaw::zero(self.params, self.rows, self.cols);
+        let mut out = PolyMatrixRaw::zero(&self.params, self.rows, self.cols);
         invert(&mut out, self);
         out
     }
 }
 
-impl<'a, 'b> Neg for &'b PolyMatrixNTT<'a> {
-    type Output = PolyMatrixNTT<'a>;
+impl Neg for &PolyMatrixNTT {
+    type Output = PolyMatrixNTT;
 
     fn neg(self) -> Self::Output {
-        let mut out = PolyMatrixNTT::zero(self.params, self.rows, self.cols);
+        let mut out = PolyMatrixNTT::zero(&self.params, self.rows, self.cols);
         invert_ntt(&mut out, self);
         out
     }
 }
 
-impl<'a, 'b> Mul for &'b PolyMatrixNTT<'a> {
-    type Output = PolyMatrixNTT<'a>;
+impl Mul for &PolyMatrixNTT {
+    type Output = PolyMatrixNTT;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        let mut out = PolyMatrixNTT::zero(self.params, self.rows, rhs.cols);
+        let mut out = PolyMatrixNTT::zero(&self.params, self.rows, rhs.cols);
         multiply(&mut out, self, rhs);
         out
     }
 }
 
-impl<'a, 'b> Add for &'b PolyMatrixNTT<'a> {
-    type Output = PolyMatrixNTT<'a>;
+impl Add for &PolyMatrixNTT {
+    type Output = PolyMatrixNTT;
 
     fn add(self, rhs: Self) -> Self::Output {
-        let mut out = PolyMatrixNTT::zero(self.params, self.rows, self.cols);
+        let mut out = PolyMatrixNTT::zero(&self.params, self.rows, self.cols);
         add(&mut out, self, rhs);
         out
     }
 }
 
-impl<'a, 'b> Add for &'b PolyMatrixRaw<'a> {
-    type Output = PolyMatrixRaw<'a>;
+impl Add for &PolyMatrixRaw {
+    type Output = PolyMatrixRaw;
 
     fn add(self, rhs: Self) -> Self::Output {
-        let mut out = PolyMatrixRaw::zero(self.params, self.rows, self.cols);
+        let mut out = PolyMatrixRaw::zero(&self.params, self.rows, self.cols);
         add_raw(&mut out, self, rhs);
         out
     }
@@ -928,14 +1024,14 @@ mod test {
 
     #[test]
     fn sets_all_zeros() {
-        let params = get_params();
+        let params = Arc::new(get_params());
         let m1 = PolyMatrixNTT::zero(&params, 2, 1);
         assert_all_zero(m1.as_slice());
     }
 
     #[test]
     fn multiply_correctness() {
-        let params = get_params();
+        let params = Arc::new(get_params());
         let m1 = PolyMatrixNTT::zero(&params, 2, 1);
         let m2 = PolyMatrixNTT::zero(&params, 3, 2);
         let m3 = &m2 * &m1;
@@ -944,7 +1040,7 @@ mod test {
 
     #[test]
     fn full_multiply_correctness() {
-        let params = get_params();
+        let params = Arc::new(get_params());
         let mut m1 = PolyMatrixRaw::zero(&params, 1, 1);
         let mut m2 = PolyMatrixRaw::zero(&params, 1, 1);
         m1.get_poly_mut(0, 0)[1] = 100;
@@ -979,7 +1075,7 @@ mod test {
 
     #[test]
     fn alt_full_multiply_correctness() {
-        let params = get_alt_params();
+        let params = Arc::new(get_alt_params());
         let mut m1 = PolyMatrixRaw::zero(&params, 1, 1);
         let mut m2 = PolyMatrixRaw::zero(&params, 1, 1);
         m1.get_poly_mut(0, 0)[1] = 100;
@@ -993,7 +1089,7 @@ mod test {
 
     #[test]
     fn to_vec_correctness() {
-        let params = get_params();
+        let params = Arc::new(get_params());
         let mut m1 = PolyMatrixRaw::zero(&params, 1, 1);
         for i in 0..params.poly_len {
             m1.data[i] = 1;

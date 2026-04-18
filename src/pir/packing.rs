@@ -1,5 +1,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
+use std::sync::Arc;
 use std::time::Instant;
 
 use log::debug;
@@ -20,17 +21,14 @@ use super::utils::*;
 use crate::pir::client::*;
 use crate::pir::measurement::*;
 
-pub fn gadget_invert_transposed_alloc<'a>(
-    inp: &PolyMatrixRaw<'a>,
-    num_digits: usize,
-) -> PolyMatrixRaw<'a> {
+pub fn gadget_invert_transposed_alloc<'a>(inp: &PolyMatrixRaw, num_digits: usize) -> PolyMatrixRaw {
     assert_eq!(inp.cols, 1);
 
-    let params = inp.params;
+    let params = inp.params.clone();
     let mut out = PolyMatrixRaw::zero(&params, inp.rows, num_digits);
 
     let num_elems = num_digits;
-    let bits_per = get_bits_per(params, num_elems);
+    let bits_per = get_bits_per(&params, num_elems);
     let mask = (1u64 << bits_per) - 1;
 
     for i in 0..inp.rows {
@@ -54,9 +52,9 @@ fn homomorphic_automorph<'a>(
     params: &'a Params,
     t: usize,
     t_exp: usize,
-    ct: &PolyMatrixNTT<'a>,
-    pub_param: &PolyMatrixNTT<'a>,
-) -> PolyMatrixNTT<'a> {
+    ct: &PolyMatrixNTT,
+    pub_param: &PolyMatrixNTT,
+) -> PolyMatrixNTT {
     assert_eq!(ct.rows, 2);
     assert_eq!(ct.cols, 1);
 
@@ -89,10 +87,10 @@ pub fn pack_lwes_inner<'a>(
     params: &'a Params,
     ell: usize,
     start_idx: usize,
-    rlwe_cts: &[PolyMatrixNTT<'a>],
-    pub_params: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> PolyMatrixNTT<'a> {
+    rlwe_cts: &[PolyMatrixNTT],
+    pub_params: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> PolyMatrixNTT {
     assert_eq!(pub_params.len(), params.poly_len_log2);
 
     if ell == 0 {
@@ -132,12 +130,12 @@ fn pack_lwes_inner_non_recursive<'a>(
     params: &'a Params,
     ell: usize,
     _start_idx: usize,
-    rlwe_cts: &[PolyMatrixNTT<'a>],
-    pub_params: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-    prepared_vals: Option<&[PolyMatrixNTT<'a>]>,
-    mut output_prepared_vals: Option<&mut Vec<PolyMatrixNTT<'a>>>,
-) -> PolyMatrixNTT<'a> {
+    rlwe_cts: &[PolyMatrixNTT],
+    pub_params: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+    prepared_vals: Option<&[PolyMatrixNTT]>,
+    mut output_prepared_vals: Option<&mut Vec<PolyMatrixNTT>>,
+) -> PolyMatrixNTT {
     assert!(pub_params.len() == params.poly_len_log2 || pub_params.len() == 0);
     assert_eq!(params.crt_count, 2);
 
@@ -217,7 +215,7 @@ fn pack_lwes_inner_non_recursive<'a>(
             total_3 += now.elapsed().as_micros();
 
             {
-                let ct: &PolyMatrixNTT<'_> = &ct_sum_1;
+                let ct: &PolyMatrixNTT = &ct_sum_1;
                 let t = (1 << cur_ell) + 1;
                 let t_exp = params.t_exp_left;
                 let (cur_ginv_ct_ntt, cur_ct_auto_1_ntt) = if cur_ell == 1
@@ -317,10 +315,10 @@ fn pack_lwes_inner_non_recursive<'a>(
 pub fn precompute_pack<'a>(
     params: &'a Params,
     ell: usize,
-    rlwe_cts: &[PolyMatrixNTT<'a>],
-    fake_pub_params: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> (PolyMatrixNTT<'a>, Vec<PolyMatrixNTT<'a>>, Vec<Vec<usize>>) {
+    rlwe_cts: &[PolyMatrixNTT],
+    fake_pub_params: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> (PolyMatrixNTT, Vec<PolyMatrixNTT>, Vec<Vec<usize>>) {
     assert!(fake_pub_params.len() == params.poly_len_log2);
     assert_eq!(params.crt_count, 2);
 
@@ -371,7 +369,7 @@ pub fn precompute_pack<'a>(
             total_3 += now.elapsed().as_micros();
 
             {
-                let ct: &PolyMatrixNTT<'_> = &ct_sum_1;
+                let ct: &PolyMatrixNTT = &ct_sum_1;
                 let t = (1 << cur_ell) + 1;
                 let t_exp = params.t_exp_left;
                 let (cur_ginv_ct_ntt, cur_ct_auto_1_ntt) = {
@@ -458,13 +456,13 @@ pub fn precompute_pack<'a>(
 pub fn pack_using_precomp_vals<'a>(
     params: &'a Params,
     ell: usize,
-    pub_params: &[PolyMatrixNTT<'a>],
+    pub_params: &[PolyMatrixNTT],
     b_values: &[u64],
-    precomp_res: &PolyMatrixNTT<'a>,
-    precomp_vals: &[PolyMatrixNTT<'a>],
+    precomp_res: &PolyMatrixNTT,
+    precomp_vals: &[PolyMatrixNTT],
     precomp_tables: &[Vec<usize>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> PolyMatrixRaw<'a> {
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> PolyMatrixRaw {
     // let now = Instant::now();
     // let mut working_set = vec![PolyMatrixNTT::zero(params, 1, 1); 1 << ell];
     let mut working_set = Vec::with_capacity(1 << (ell - 1));
@@ -522,7 +520,7 @@ pub fn pack_using_precomp_vals<'a>(
             // --
 
             let now = Instant::now();
-            let ct: &PolyMatrixNTT<'_> = &ct_sum_1;
+            let ct: &PolyMatrixNTT = &ct_sum_1;
             let t = (1 << cur_ell) + 1;
 
             let cur_ginv_ct_ntt = &precomp_vals[idx_precomp];
@@ -600,9 +598,9 @@ pub fn pack_using_precomp_vals<'a>(
 
 pub fn pack_single_lwe<'a>(
     params: &'a Params,
-    pub_params: &[PolyMatrixNTT<'a>],
-    lwe_ct: &PolyMatrixNTT<'a>,
-) -> PolyMatrixNTT<'a> {
+    pub_params: &[PolyMatrixNTT],
+    lwe_ct: &PolyMatrixNTT,
+) -> PolyMatrixNTT {
     // computing:
     // r0 = f
     // r1 = r0 + automorph(r0, ts[0])
@@ -622,9 +620,9 @@ pub fn pack_single_lwe<'a>(
 
 pub fn add_all_rotations<'a>(
     params: &'a Params,
-    pub_params: &[PolyMatrixNTT<'a>],
-    lwe_ct: &PolyMatrixNTT<'a>,
-) -> PolyMatrixNTT<'a> {
+    pub_params: &[PolyMatrixNTT],
+    lwe_ct: &PolyMatrixNTT,
+) -> PolyMatrixNTT {
     // computing:
     // r0 = f
     // r1 = r0 + automorph(r0, ts[0])
@@ -655,7 +653,8 @@ pub fn fast_add_into(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
     assert!(res.rows == a.rows);
     assert!(res.cols == a.cols);
 
-    let params = res.params;
+    let params = res.params.clone();
+    let params = params.as_ref();
     for i in 0..res.rows {
         for j in 0..res.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -687,7 +686,8 @@ pub fn multiply_no_reduce(
     assert_eq!(res.cols, b.cols);
     assert_eq!(a.cols, b.rows);
 
-    let params = res.params;
+    let params = res.params.clone();
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..b.cols {
             let res_poly = res.get_poly_mut(i, j);
@@ -864,7 +864,7 @@ pub fn fast_multiply_no_reduce_in_range_generic(
     unimplemented!("x86_64 required");
 }
 
-pub fn condense_matrix<'a>(params: &'a Params, a: &PolyMatrixNTT<'a>) -> PolyMatrixNTT<'a> {
+pub fn condense_matrix<'a>(params: &'a Params, a: &PolyMatrixNTT) -> PolyMatrixNTT {
     if params.crt_count == 2 {
         let mut res = PolyMatrixNTT::zero(params, a.rows, a.cols);
         for i in 0..a.rows {
@@ -883,7 +883,7 @@ pub fn condense_matrix<'a>(params: &'a Params, a: &PolyMatrixNTT<'a>) -> PolyMat
     }
 }
 
-pub fn uncondense_matrix<'a>(params: &'a Params, a: &PolyMatrixNTT<'a>) -> PolyMatrixNTT<'a> {
+pub fn uncondense_matrix<'a>(params: &'a Params, a: &PolyMatrixNTT) -> PolyMatrixNTT {
     let mut res = PolyMatrixNTT::zero(params, a.rows, a.cols);
     for i in 0..a.rows {
         for j in 0..a.cols {
@@ -986,7 +986,8 @@ pub fn fast_add_into_no_reduce(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT) {
 }
 
 pub fn fast_reduce(res: &mut PolyMatrixNTT) {
-    let params = res.params;
+    let params = res.params.clone();
+    let params = params.as_ref();
     let res_slc = res.as_mut_slice();
     for m in 0..params.crt_count {
         for i in 0..params.poly_len {
@@ -1003,10 +1004,10 @@ pub fn fast_reduce(res: &mut PolyMatrixNTT) {
 pub fn combine<'a>(
     params: &'a Params,
     cur_ell: usize,
-    ct_even: &mut PolyMatrixNTT<'a>,
-    ct_odd: &PolyMatrixNTT<'a>,
-    pub_params: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
+    ct_even: &mut PolyMatrixNTT,
+    ct_odd: &PolyMatrixNTT,
+    pub_params: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
 ) {
     let (y, neg_y) = (&y_constants.0[cur_ell - 1], &y_constants.1[cur_ell - 1]);
 
@@ -1032,13 +1033,13 @@ pub fn prep_pack_lwes<'a>(
     params: &'a Params,
     lwe_cts: &[u64],
     // packed_per_rlwe: usize,
-) -> Vec<PolyMatrixNTT<'a>> {
+) -> Vec<PolyMatrixNTT> {
     let lwe_cts_size = params.poly_len * (params.poly_len + 1);
     assert_eq!(lwe_cts.len(), lwe_cts_size);
 
     // assert!(cols_to_do == params.poly_len);
 
-    let mut rlwe_cts: Vec<PolyMatrixNTT<'_>> = Vec::new();
+    let mut rlwe_cts: Vec<PolyMatrixNTT> = Vec::new();
     for i in 0..params.poly_len {
         let mut rlwe_ct = PolyMatrixRaw::zero(params, 2, 1);
 
@@ -1069,7 +1070,7 @@ pub fn prep_pack_many_lwes<'a>(
     lwe_cts: &[u64],
     num_rlwe_outputs: usize, // num_rlwe_outputs = db_cols / gamma
     gamma: usize,
-) -> Vec<Vec<PolyMatrixNTT<'a>>> {
+) -> Vec<Vec<PolyMatrixNTT>> {
     let lwe_cts_size = (params.poly_len + 1) * (num_rlwe_outputs * gamma); // = (params.poly_len + 1) * db_cols
     assert_eq!(lwe_cts.len(), lwe_cts_size);
 
@@ -1077,7 +1078,7 @@ pub fn prep_pack_many_lwes<'a>(
     let num_iters = num_rlwe_outputs / ratio;
 
     // Parallelize over independent iterations with rayon
-    let per_iter_results: Vec<Vec<Vec<PolyMatrixNTT<'a>>>> = (0..num_iters)
+    let per_iter_results: Vec<Vec<Vec<PolyMatrixNTT>>> = (0..num_iters)
         .into_par_iter()
         .map(|i| {
             let mut v = Vec::new();
@@ -1104,10 +1105,10 @@ pub fn prep_pack_many_lwes<'a>(
 
 pub fn prepare_packed_vals_pack_lwes<'a>(
     params: &'a Params,
-    preped_rlwe_cts: &[PolyMatrixNTT<'a>],
+    preped_rlwe_cts: &[PolyMatrixNTT],
     _cols_to_do: usize,
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> Vec<PolyMatrixNTT<'a>> {
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> Vec<PolyMatrixNTT> {
     let now = Instant::now();
     let mut output_preped_packed_vals = Vec::new();
     pack_lwes_inner_non_recursive(
@@ -1127,10 +1128,10 @@ pub fn prepare_packed_vals_pack_lwes<'a>(
 /// Returns the `prep_packed_vals` value.
 pub fn prep_pack_many_lwes_packed_vals<'a>(
     params: &'a Params,
-    prep_rlwe_cts: &[Vec<PolyMatrixNTT<'a>>],
+    prep_rlwe_cts: &[Vec<PolyMatrixNTT>],
     num_rlwe_outputs: usize,
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> Vec<Vec<PolyMatrixNTT<'a>>> {
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> Vec<Vec<PolyMatrixNTT>> {
     assert_eq!(prep_rlwe_cts.len(), num_rlwe_outputs);
     assert_eq!(prep_rlwe_cts[0].len(), params.poly_len);
 
@@ -1150,12 +1151,12 @@ pub fn prep_pack_many_lwes_packed_vals<'a>(
 pub fn pack_lwes<'a>(
     params: &'a Params,
     b_values: &[u64],
-    preped_rlwe_cts: &[PolyMatrixNTT<'a>],
-    preped_packed_vals: &[PolyMatrixNTT<'a>],
+    preped_rlwe_cts: &[PolyMatrixNTT],
+    preped_packed_vals: &[PolyMatrixNTT],
     cols_to_do: usize,
-    pub_params: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> PolyMatrixNTT<'a> {
+    pub_params: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> PolyMatrixNTT {
     assert_eq!(preped_rlwe_cts.len(), cols_to_do);
     assert_eq!(cols_to_do, params.poly_len);
     assert_eq!(b_values.len(), params.poly_len);
@@ -1189,13 +1190,13 @@ pub fn pack_lwes<'a>(
 
 pub fn pack_many_lwes<'a>(
     params: &'a Params,
-    // prep_rlwe_cts: &[Vec<PolyMatrixNTT<'a>>],
-    precomp: &Precomp<'a>,
+    // prep_rlwe_cts: &[Vec<PolyMatrixNTT>],
+    precomp: &Precomp,
     b_values: &[u64],
     num_rlwe_outputs: usize,
-    pack_pub_params_row_1s: &[PolyMatrixNTT<'a>],
-    y_constants: &(Vec<PolyMatrixNTT<'a>>, Vec<PolyMatrixNTT<'a>>),
-) -> Vec<PolyMatrixRaw<'a>> {
+    pack_pub_params_row_1s: &[PolyMatrixNTT],
+    y_constants: &(Vec<PolyMatrixNTT>, Vec<PolyMatrixNTT>),
+) -> Vec<PolyMatrixRaw> {
     // assert_eq!(prep_rlwe_cts.len(), num_rlwe_outputs);
     // assert_eq!(prep_rlwe_cts[0].len(), params.poly_len);
     assert_eq!(b_values.len(), num_rlwe_outputs * params.poly_len);
@@ -1223,15 +1224,15 @@ pub fn pack_many_lwes<'a>(
 
 pub fn pack_many_lwes_inspir<'a>(
     packing_params: &'a PackParams,
-    precomp_inspir_vec: &Vec<PrecompInsPIR<'a>>,
+    precomp_inspir_vec: &Vec<PrecompInsPIR>,
     b_values: &[u64],
-    packing_keys: &PackingKeys<'a>,
+    packing_keys: &PackingKeys,
     gamma: usize,
-) -> Vec<PolyMatrixRaw<'a>> {
+) -> Vec<PolyMatrixRaw> {
     let num_rlwe_outputs = (b_values.len() as f64 / gamma as f64).ceil() as usize;
     let group_size = packing_params.params.poly_len / gamma;
 
-    let res: Vec<PolyMatrixRaw<'a>> = (0..num_rlwe_outputs)
+    let res: Vec<PolyMatrixRaw> = (0..num_rlwe_outputs)
         .into_par_iter()
         .map(|i| {
             let which_group = i / group_size;
@@ -1277,11 +1278,11 @@ pub fn pack_many_lwes_inspir<'a>(
 
 pub fn pack_many_lwes_inspir_without_rotations<'a>(
     packing_params: &'a PackParams,
-    precomp_inspir_vec: &Vec<PrecompInsPIR<'a>>,
+    precomp_inspir_vec: &Vec<PrecompInsPIR>,
     b_values: &[u64],
-    packing_keys: &PackingKeys<'a>,
+    packing_keys: &PackingKeys,
     gamma: usize,
-) -> Vec<PolyMatrixRaw<'a>> {
+) -> Vec<PolyMatrixRaw> {
     // assert!(b_values.len() >= num_rlwe_outputs * packed_per_rlwe);
     let num_rlwe_outputs = (b_values.len() as f64 / gamma as f64).ceil() as usize;
 
@@ -1330,7 +1331,7 @@ pub fn pack_many_lwes_inspir_without_rotations<'a>(
     res
 }
 
-fn rotation_poly<'a>(params: &'a Params, amount: usize) -> PolyMatrixNTT<'a> {
+fn rotation_poly<'a>(params: &'a Params, amount: usize) -> PolyMatrixNTT {
     let mut res = PolyMatrixRaw::zero(params, 1, 1);
     res.data[amount] = 1;
     res.ntt()
@@ -1338,10 +1339,10 @@ fn rotation_poly<'a>(params: &'a Params, amount: usize) -> PolyMatrixNTT<'a> {
 
 pub fn pack_using_single_with_offset<'a>(
     params: &'a Params,
-    pub_params: &[PolyMatrixNTT<'a>],
-    cts: &[PolyMatrixNTT<'a>],
+    pub_params: &[PolyMatrixNTT],
+    cts: &[PolyMatrixNTT],
     offset: usize,
-) -> PolyMatrixRaw<'a> {
+) -> PolyMatrixRaw {
     let mut res = PolyMatrixNTT::zero(params, 2, 1);
     for i in 0..cts.len() {
         let packed_single = pack_single_lwe(params, pub_params, &cts[i]);
@@ -1517,8 +1518,8 @@ pub fn apply_automorph_ntt_raw<'a>(
 pub fn apply_automorph_ntt<'a>(
     params: &'a Params,
     tables: &[Vec<usize>],
-    mat: &PolyMatrixNTT<'a>,
-    res: &mut PolyMatrixNTT<'a>,
+    mat: &PolyMatrixNTT,
+    res: &mut PolyMatrixNTT,
     t: usize,
 ) {
     // run apply_automorph_ntt on each poly in the matrix
@@ -1543,9 +1544,9 @@ pub fn apply_automorph_ntt<'a>(
 pub fn apply_automorph_ntt_double<'a>(
     params: &'a Params,
     tables: &[Vec<usize>],
-    mat: &PolyMatrixNTT<'a>,
-    res_1: &mut PolyMatrixNTT<'a>,
-    res_2: &mut PolyMatrixNTT<'a>,
+    mat: &PolyMatrixNTT,
+    res_1: &mut PolyMatrixNTT,
+    res_2: &mut PolyMatrixNTT,
     t: usize,
 ) {
     // run apply_automorph_ntt on each poly in the matrix
@@ -1620,18 +1621,18 @@ impl Default for PackingType {
 }
 
 #[derive(Clone)]
-pub struct PackParams<'a> {
-    pub params: &'a Params,
+pub struct PackParams {
+    pub params: Arc<Params>,
     pub num_to_pack: usize,
     pub tables: Vec<Vec<usize>>,
     pub gen_pows: Vec<usize>,
-    pub mod_inv_poly: PolyMatrixNTT<'a>,
-    pub monomial_ntts: Vec<PolyMatrixNTT<'a>>,
-    pub neg_monomial_ntts: Vec<PolyMatrixNTT<'a>>,
+    pub mod_inv_poly: PolyMatrixNTT,
+    pub monomial_ntts: Vec<PolyMatrixNTT>,
+    pub neg_monomial_ntts: Vec<PolyMatrixNTT>,
 }
 
-impl PackParams<'_> {
-    pub fn new<'a>(params: &'a Params, num_to_pack: usize) -> PackParams<'a> {
+impl PackParams {
+    pub fn new(params: &Params, num_to_pack: usize) -> PackParams {
         debug!("Starting tables");
         let tables = generate_automorph_tables_brute_force(params);
         debug!("Got tables");
@@ -1662,7 +1663,7 @@ impl PackParams<'_> {
             neg_monomial_ntts.push(-&mono_ntt);
         }
         PackParams {
-            params,
+            params: Arc::new(params.clone()),
             num_to_pack,
             tables,
             gen_pows,
@@ -1673,7 +1674,7 @@ impl PackParams<'_> {
     }
 
     // An incomplete version of the packing parameters, used by the client
-    pub fn new_fast<'a>(params: &'a Params, num_to_pack: usize) -> PackParams<'a> {
+    pub fn new_fast(params: &Params, num_to_pack: usize) -> PackParams {
         let generator: usize = if num_to_pack < params.poly_len {
             (2 * params.poly_len / num_to_pack) + 1
         } else {
@@ -1690,7 +1691,7 @@ impl PackParams<'_> {
         }
 
         PackParams {
-            params,
+            params: Arc::new(params.clone()),
             num_to_pack,
             tables: vec![],
             gen_pows,
@@ -1700,9 +1701,9 @@ impl PackParams<'_> {
         }
     }
 
-    pub fn empty<'a>(params: &'a Params) -> PackParams<'a> {
+    pub fn empty(params: &Params) -> PackParams {
         PackParams {
-            params,
+            params: Arc::new(params.clone()),
             num_to_pack: 0,
             tables: vec![],
             gen_pows: vec![],
@@ -1714,17 +1715,17 @@ impl PackParams<'_> {
 }
 
 #[derive(Clone)]
-pub struct PrecompInsPIR<'a> {
-    pub a_hat: PolyMatrixRaw<'a>,
-    pub bold_t_condensed: PolyMatrixNTT<'a>,
-    pub bold_t_bar_condensed: PolyMatrixNTT<'a>,
-    pub bold_t_hat_condensed: PolyMatrixNTT<'a>,
+pub struct PrecompInsPIR {
+    pub a_hat: PolyMatrixRaw,
+    pub bold_t_condensed: PolyMatrixNTT,
+    pub bold_t_bar_condensed: PolyMatrixNTT,
+    pub bold_t_hat_condensed: PolyMatrixNTT,
 }
 
-impl<'a> PrecompInsPIR<'a> {
+impl PrecompInsPIR {
     /// Create a minimal PrecompInsPIR with only a_hat populated.
     /// Used when bold_t data is device-resident (GPU collapse path).
-    pub fn with_a_hat_only(params: &'a Params, a_hat: PolyMatrixRaw<'a>) -> Self {
+    pub fn with_a_hat_only(params: &Params, a_hat: PolyMatrixRaw) -> Self {
         PrecompInsPIR {
             a_hat,
             bold_t_condensed: PolyMatrixNTT::zero(params, 1, 1),
@@ -1735,10 +1736,10 @@ impl<'a> PrecompInsPIR<'a> {
 }
 
 pub fn generate_rotations<'a>(
-    packing_params: &PackParams<'a>,
-    to_rotate: &PolyMatrixNTT<'a>,
-) -> PolyMatrixNTT<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    to_rotate: &PolyMatrixNTT,
+) -> PolyMatrixNTT {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
@@ -1753,10 +1754,10 @@ pub fn generate_rotations<'a>(
 }
 
 pub fn generate_rotations_double<'a>(
-    packing_params: &PackParams<'a>,
-    to_rotate: &PolyMatrixNTT<'a>,
-) -> (PolyMatrixNTT<'a>, PolyMatrixNTT<'a>) {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    to_rotate: &PolyMatrixNTT,
+) -> (PolyMatrixNTT, PolyMatrixNTT) {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
@@ -1785,21 +1786,21 @@ pub fn generate_rotations_double<'a>(
 
 #[derive(Clone)]
 pub struct OfflinePackingKeys<'a> {
-    pub packing_params: Option<&'a PackParams<'a>>,
+    pub packing_params: Option<&'a PackParams>,
     pub full_key: bool,
 
     pub w_seed: [u8; 32],
     pub v_seed: [u8; 32],
 
-    pub w_mask: Option<PolyMatrixNTT<'a>>,
-    pub v_mask: Option<PolyMatrixNTT<'a>>,
+    pub w_mask: Option<PolyMatrixNTT>,
+    pub v_mask: Option<PolyMatrixNTT>,
 
-    pub w_all: Option<PolyMatrixNTT<'a>>,
-    pub w_bar_all: Option<PolyMatrixNTT<'a>>,
+    pub w_all: Option<PolyMatrixNTT>,
+    pub w_bar_all: Option<PolyMatrixNTT>,
 }
 
-impl OfflinePackingKeys<'_> {
-    pub fn init_empty<'a>() -> OfflinePackingKeys<'a> {
+impl<'a> OfflinePackingKeys<'a> {
+    pub fn init_empty() -> OfflinePackingKeys<'a> {
         OfflinePackingKeys {
             packing_params: None,
             full_key: false,
@@ -1812,10 +1813,7 @@ impl OfflinePackingKeys<'_> {
         }
     }
 
-    pub fn init<'a>(
-        packing_params: &'a PackParams<'a>,
-        w_seed: [u8; 32],
-    ) -> OfflinePackingKeys<'a> {
+    pub fn init(packing_params: &'a PackParams, w_seed: [u8; 32]) -> OfflinePackingKeys<'a> {
         let w_mask = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
@@ -1837,8 +1835,8 @@ impl OfflinePackingKeys<'_> {
         }
     }
 
-    pub fn init_full<'a>(
-        packing_params: &'a PackParams<'a>,
+    pub fn init_full(
+        packing_params: &'a PackParams,
         w_seed: [u8; 32],
         v_seed: [u8; 32],
     ) -> OfflinePackingKeys<'a> {
@@ -1872,41 +1870,41 @@ impl OfflinePackingKeys<'_> {
 }
 
 #[derive(Clone)]
-pub struct PackingKeys<'a> {
+pub struct PackingKeys {
     pub packing_type: PackingType,
 
     // Inspiring Stuff
     pub full_key: bool,
-    pub packing_params: Option<PackParams<'a>>,
-    pub y_body: Option<PolyMatrixNTT<'a>>,
-    pub z_body: Option<PolyMatrixNTT<'a>>,
-    pub y_body_condensed: Option<PolyMatrixNTT<'a>>,
-    pub z_body_condensed: Option<PolyMatrixNTT<'a>>,
+    pub packing_params: Option<PackParams>,
+    pub y_body: Option<PolyMatrixNTT>,
+    pub z_body: Option<PolyMatrixNTT>,
+    pub y_body_condensed: Option<PolyMatrixNTT>,
+    pub z_body_condensed: Option<PolyMatrixNTT>,
 
     pub expanded: bool,
-    pub y_all_condensed: Option<PolyMatrixNTT<'a>>,
-    pub y_bar_all_condensed: Option<PolyMatrixNTT<'a>>,
+    pub y_all_condensed: Option<PolyMatrixNTT>,
+    pub y_bar_all_condensed: Option<PolyMatrixNTT>,
 
     // CDKS stuff
     pub params: Option<Params>,
-    pub pack_pub_params_row_1s: Vec<PolyMatrixNTT<'a>>,
-    pub fake_pack_pub_params: Vec<PolyMatrixNTT<'a>>,
+    pub pack_pub_params_row_1s: Vec<PolyMatrixNTT>,
+    pub fake_pack_pub_params: Vec<PolyMatrixNTT>,
 }
 
-impl PackingKeys<'_> {
-    pub fn init_full<'a>(
-        packing_params: &PackParams<'a>,
-        sk_reg: &PolyMatrixRaw<'a>,
+impl PackingKeys {
+    pub fn init_full(
+        packing_params: &PackParams,
+        sk_reg: &PolyMatrixRaw,
         w_seed: [u8; 32],
         v_seed: [u8; 32],
-    ) -> PackingKeys<'a> {
-        let w_mask: PolyMatrixNTT<'_> = PolyMatrixNTT::random_rng(
+    ) -> PackingKeys {
+        let w_mask: PolyMatrixNTT = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
             packing_params.params.t_exp_left,
             &mut ChaCha20Rng::from_seed(w_seed),
         );
-        let v_mask: PolyMatrixNTT<'_> = PolyMatrixNTT::random_rng(
+        let v_mask: PolyMatrixNTT = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
             packing_params.params.t_exp_left,
@@ -1945,12 +1943,12 @@ impl PackingKeys<'_> {
         }
     }
 
-    pub fn init<'a>(
-        packing_params: &PackParams<'a>,
-        sk_reg: &PolyMatrixRaw<'a>,
+    pub fn init(
+        packing_params: &PackParams,
+        sk_reg: &PolyMatrixRaw,
         w_seed: [u8; 32],
-    ) -> PackingKeys<'a> {
-        let w_mask: PolyMatrixNTT<'_> = PolyMatrixNTT::random_rng(
+    ) -> PackingKeys {
+        let w_mask: PolyMatrixNTT = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
             packing_params.params.t_exp_left,
@@ -1982,11 +1980,11 @@ impl PackingKeys<'_> {
         }
     }
 
-    pub fn init_cdks<'a>(
-        params: &'a Params,
-        sk_reg: &PolyMatrixRaw<'a>,
+    pub fn init_cdks(
+        params: &Params,
+        sk_reg: &PolyMatrixRaw,
         static_seed_2: [u8; 32],
-    ) -> PackingKeys<'a> {
+    ) -> PackingKeys {
         let pack_pub_params = raw_generate_expansion_params(
             &params,
             &sk_reg,
@@ -2049,7 +2047,7 @@ impl PackingKeys<'_> {
         }
     }
 
-    pub fn expand<'a>(&mut self) {
+    pub fn expand(&mut self) {
         assert_eq!(self.packing_type, PackingType::InspiRING);
         if !self.expanded {
             let packing_params = self.packing_params.as_ref().unwrap();
@@ -2070,11 +2068,11 @@ impl PackingKeys<'_> {
 }
 
 pub fn packing_with_preprocessing_offline<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-) -> PrecompInsPIR<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+) -> PrecompInsPIR {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
@@ -2153,11 +2151,11 @@ pub fn packing_with_preprocessing_offline<'a>(
 }
 
 pub fn packing_with_preprocessing_offline_without_rotations<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-) -> PrecompInsPIR<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+) -> PrecompInsPIR {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
@@ -2248,12 +2246,12 @@ pub fn packing_with_preprocessing_offline_without_rotations<'a>(
 }
 
 pub fn packing_with_preprocessing_online<'a>(
-    packing_params: &PackParams<'a>,
-    precomp_inspiring: &PrecompInsPIR<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-    y_all_condensed: &PolyMatrixNTT<'a>,
-) -> PolyMatrixRaw<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    precomp_inspiring: &PrecompInsPIR,
+    b_poly: &PolyMatrixRaw,
+    y_all_condensed: &PolyMatrixNTT,
+) -> PolyMatrixRaw {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
 
     let a_hat = &precomp_inspiring.a_hat;
@@ -2304,12 +2302,12 @@ pub fn packing_with_preprocessing_online<'a>(
 }
 
 pub fn packing_with_preprocessing_online_without_rotations<'a>(
-    packing_params: &PackParams<'a>,
-    precomp_inspiring: &PrecompInsPIR<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-    y_condensed: &PolyMatrixNTT<'a>,
-) -> PolyMatrixRaw<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    precomp_inspiring: &PrecompInsPIR,
+    b_poly: &PolyMatrixRaw,
+    y_condensed: &PolyMatrixNTT,
+) -> PolyMatrixRaw {
+    let params = packing_params.params.as_ref();
     let num_to_pack = packing_params.num_to_pack;
 
     let a_hat = &precomp_inspiring.a_hat;
@@ -2377,7 +2375,7 @@ pub fn packing_with_preprocessing_online_without_rotations<'a>(
 /// Per-column calls then skip these uploads and only send a_ct.
 #[cfg(feature = "gpu")]
 pub fn setup_packing_gpu(packing_params: &PackParams) {
-    let params = packing_params.params;
+    let params = packing_params.params.as_ref();
     let monomial_ntts = &packing_params.monomial_ntts;
     let neg_monomial_ntts = &packing_params.neg_monomial_ntts;
     let gen_pows = &packing_params.gen_pows;
@@ -2440,12 +2438,12 @@ pub fn setup_packing_gpu(packing_params: &PackParams) {
 }
 
 pub fn full_packing_with_preprocessing_offline<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    w_bar_all: &PolyMatrixNTT<'a>,
-    v_mask: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-) -> PrecompInsPIR<'a> {
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    w_bar_all: &PolyMatrixNTT,
+    v_mask: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+) -> PrecompInsPIR {
     full_packing_with_preprocessing_offline_inner(
         packing_params,
         w_all,
@@ -2458,14 +2456,14 @@ pub fn full_packing_with_preprocessing_offline<'a>(
 
 #[cfg(feature = "gpu")]
 pub fn full_packing_with_preprocessing_offline_device<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    w_bar_all: &PolyMatrixNTT<'a>,
-    v_mask: &PolyMatrixNTT<'a>,
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    w_bar_all: &PolyMatrixNTT,
+    v_mask: &PolyMatrixNTT,
     device_a_ct: *const u64,
     non_zeros: usize,
-) -> PrecompInsPIR<'a> {
-    let empty: Vec<PolyMatrixNTT<'a>> = Vec::new();
+) -> PrecompInsPIR {
+    let empty: Vec<PolyMatrixNTT> = Vec::new();
     full_packing_with_preprocessing_offline_inner(
         packing_params,
         w_all,
@@ -2477,15 +2475,15 @@ pub fn full_packing_with_preprocessing_offline_device<'a>(
 }
 
 fn full_packing_with_preprocessing_offline_inner<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    w_bar_all: &PolyMatrixNTT<'a>,
-    v_mask: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    w_bar_all: &PolyMatrixNTT,
+    v_mask: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
     device_a_ct: Option<(*const u64, usize)>,
-) -> PrecompInsPIR<'a> {
+) -> PrecompInsPIR {
     let _t_start = Instant::now();
-    let params = packing_params.params;
+    let params = packing_params.params.as_ref();
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
     let monomial_ntts = &packing_params.monomial_ntts;
@@ -2753,11 +2751,11 @@ fn full_packing_with_preprocessing_offline_inner<'a>(
 
 /// In-place gadget invert: writes into pre-allocated output buffer.
 /// Avoids per-call allocation in the collapse loop.
-pub fn gadget_invert_transposed_into<'a>(out: &mut PolyMatrixRaw<'a>, inp: &PolyMatrixRaw<'a>) {
+pub fn gadget_invert_transposed_into<'a>(out: &mut PolyMatrixRaw, inp: &PolyMatrixRaw) {
     assert_eq!(inp.cols, 1);
     assert_eq!(inp.rows, out.rows);
 
-    let params = inp.params;
+    let params = inp.params.as_ref();
     let num_elems = out.cols;
     let bits_per = get_bits_per(params, num_elems);
     let mask = (1u64 << bits_per) - 1;
@@ -2784,13 +2782,13 @@ pub fn gadget_invert_transposed_into<'a>(out: &mut PolyMatrixRaw<'a>, inp: &Poly
 }
 
 pub fn full_packing_with_preprocessing_offline_without_rotations<'a>(
-    packing_params: &PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    w_bar_all: &PolyMatrixNTT<'a>,
-    v_mask: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-) -> PrecompInsPIR<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    w_bar_all: &PolyMatrixNTT,
+    v_mask: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+) -> PrecompInsPIR {
+    let params = packing_params.params.as_ref();
     let tables = &packing_params.tables;
     let gen_pows = &packing_params.gen_pows;
     let monomial_ntts = &packing_params.monomial_ntts;
@@ -2941,14 +2939,14 @@ pub fn full_packing_with_preprocessing_offline_without_rotations<'a>(
 }
 
 pub fn full_packing_with_preprocessing_online<'a>(
-    packing_params: &'a PackParams<'a>,
-    precomp_inspiring: &PrecompInsPIR<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-    y_all_condensed: &PolyMatrixNTT<'a>,
-    y_bar_all_condensed: &PolyMatrixNTT<'a>,
-    z_body_condensed: &PolyMatrixNTT<'a>,
-) -> PolyMatrixRaw<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    precomp_inspiring: &PrecompInsPIR,
+    b_poly: &PolyMatrixRaw,
+    y_all_condensed: &PolyMatrixNTT,
+    y_bar_all_condensed: &PolyMatrixNTT,
+    z_body_condensed: &PolyMatrixNTT,
+) -> PolyMatrixRaw {
+    let params = packing_params.params.as_ref();
 
     let a_hat = &precomp_inspiring.a_hat;
     let bold_t_condensed = &precomp_inspiring.bold_t_condensed;
@@ -3023,13 +3021,13 @@ pub fn full_packing_with_preprocessing_online<'a>(
 }
 
 pub fn full_packing_with_preprocessing_online_without_rotations<'a>(
-    packing_params: &'a PackParams<'a>,
-    precomp_inspiring: &PrecompInsPIR<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-    y_condensed: &PolyMatrixNTT<'a>,
-    z_body_condensed: &PolyMatrixNTT<'a>,
-) -> PolyMatrixRaw<'a> {
-    let params = packing_params.params;
+    packing_params: &'a PackParams,
+    precomp_inspiring: &PrecompInsPIR,
+    b_poly: &PolyMatrixRaw,
+    y_condensed: &PolyMatrixNTT,
+    z_body_condensed: &PolyMatrixNTT,
+) -> PolyMatrixRaw {
+    let params = packing_params.params.as_ref();
 
     let a_hat = &precomp_inspiring.a_hat;
     let bold_t_condensed = &precomp_inspiring.bold_t_condensed;
@@ -3122,12 +3120,12 @@ pub fn full_packing_with_preprocessing_online_without_rotations<'a>(
 }
 
 pub fn packing_fully_online<'a>(
-    packing_params: &'a PackParams<'a>,
-    offline_packing_keys: &OfflinePackingKeys<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-    packing_keys: &PackingKeys<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-) -> PolyMatrixRaw<'a> {
+    packing_params: &'a PackParams,
+    offline_packing_keys: &OfflinePackingKeys,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+    packing_keys: &PackingKeys,
+    b_poly: &PolyMatrixRaw,
+) -> PolyMatrixRaw {
     let poly_len = packing_params.params.poly_len;
 
     // let part5 : Instant;
@@ -3186,12 +3184,12 @@ pub fn packing_fully_online<'a>(
 }
 
 pub fn packing_fully_online_without_rotations<'a>(
-    packing_params: &'a PackParams<'a>,
-    offline_packing_keys: &OfflinePackingKeys<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-    packing_keys: &PackingKeys<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-) -> PolyMatrixRaw<'a> {
+    packing_params: &'a PackParams,
+    offline_packing_keys: &OfflinePackingKeys,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+    packing_keys: &PackingKeys,
+    b_poly: &PolyMatrixRaw,
+) -> PolyMatrixRaw {
     let poly_len = packing_params.params.poly_len;
     let packed = if (packing_params.num_to_pack == poly_len) && (a_ct_tilde.len() > poly_len / 2) {
         let w_all = offline_packing_keys.w_all.as_ref().unwrap();
@@ -3233,12 +3231,12 @@ pub fn packing_fully_online_without_rotations<'a>(
 }
 
 pub fn half_packing_fully_online<'a>(
-    half_packing_params: &'a PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-    y_all_condensed: &PolyMatrixNTT<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-) -> PolyMatrixRaw<'a> {
+    half_packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+    y_all_condensed: &PolyMatrixNTT,
+    b_poly: &PolyMatrixRaw,
+) -> PolyMatrixRaw {
     let precomp_inspiring =
         packing_with_preprocessing_offline(&half_packing_params, &w_all, &a_ct_tilde);
     packing_with_preprocessing_online(
@@ -3250,13 +3248,13 @@ pub fn half_packing_fully_online<'a>(
 }
 
 pub fn half_packing_fully_online_without_rotations<'a>(
-    half_packing_params: &'a PackParams<'a>,
-    w_all: &PolyMatrixNTT<'a>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
-    // y_condensed: &PolyMatrixNTT<'a>,
-    packing_keys: &PackingKeys<'a>,
-    b_poly: &PolyMatrixRaw<'a>,
-) -> PolyMatrixRaw<'a> {
+    half_packing_params: &'a PackParams,
+    w_all: &PolyMatrixNTT,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
+    // y_condensed: &PolyMatrixNTT,
+    packing_keys: &PackingKeys,
+    b_poly: &PolyMatrixRaw,
+) -> PolyMatrixRaw {
     let precomp_inspiring = packing_with_preprocessing_offline_without_rotations(
         &half_packing_params,
         &w_all,
@@ -3273,11 +3271,11 @@ pub fn half_packing_fully_online_without_rotations<'a>(
 
 pub fn generate_ksk_body<'a>(
     params: &'a Params,
-    sk_reg: &PolyMatrixRaw<'a>,
+    sk_reg: &PolyMatrixRaw,
     generator: usize,
-    mask: &PolyMatrixNTT<'a>,
+    mask: &PolyMatrixNTT,
     rng: &mut ChaCha20Rng,
-) -> PolyMatrixNTT<'a> {
+) -> PolyMatrixNTT {
     let tau_sk_reg = automorph_alloc(&sk_reg, generator);
     let minus_s_times_mask = &sk_reg.ntt() * &(-mask);
     let error_poly = PolyMatrixRaw::noise(
@@ -3297,15 +3295,15 @@ pub fn generate_ksk_body<'a>(
 
 pub fn query_gen<'a>(
     packing_params: &'a PackParams,
-    sk_reg: &PolyMatrixRaw<'a>,
-    w_mask: &PolyMatrixNTT<'a>,
-    v_mask: &PolyMatrixNTT<'a>,
+    sk_reg: &PolyMatrixRaw,
+    w_mask: &PolyMatrixNTT,
+    v_mask: &PolyMatrixNTT,
     messages: &Vec<u64>,
-    a_ct_tilde: &Vec<PolyMatrixNTT<'a>>,
+    a_ct_tilde: &Vec<PolyMatrixNTT>,
     rng_y: &mut ChaCha20Rng,
     rng_z: &mut ChaCha20Rng,
-) -> (PolyMatrixRaw<'a>, PolyMatrixNTT<'a>, PolyMatrixNTT<'a>) {
-    let params = packing_params.params;
+) -> (PolyMatrixRaw, PolyMatrixNTT, PolyMatrixNTT) {
+    let params = packing_params.params.as_ref();
     let generator = packing_params.gen_pows[1];
     // let num_to_pack = packing_params.num_to_pack;
     let gamma = a_ct_tilde.len();
@@ -3314,7 +3312,7 @@ pub fn query_gen<'a>(
 
     let mut b_poly = PolyMatrixRaw::zero(&params, 1, 1);
     for i in 0..gamma {
-        let mut pt: PolyMatrixRaw<'_> = PolyMatrixRaw::zero(&params, 1, 1);
+        let mut pt: PolyMatrixRaw = PolyMatrixRaw::zero(&params, 1, 1);
         pt.get_poly_mut(0, 0)[0] = rescale(messages[i], params.pt_modulus, params.modulus);
 
         let mut b_ntt = &sk_reg.ntt() * &(-&a_ct_tilde[i]);
@@ -3369,7 +3367,7 @@ mod test {
         let mut v_ct = Vec::new();
         let mut b_values = Vec::new();
         for i in 0..num_to_pack {
-            let mut pt: PolyMatrixRaw<'_> = PolyMatrixRaw::zero(&params, 1, 1);
+            let mut pt: PolyMatrixRaw = PolyMatrixRaw::zero(&params, 1, 1);
             let val = gold.data[i];
             let scale_k = params.modulus / params.pt_modulus;
             let mod_inv = invert_uint_mod(num_to_pack as u64, params.modulus).unwrap();
@@ -3446,7 +3444,7 @@ mod test {
         let mut v_ct = Vec::new();
         let mut b_values = Vec::new();
         for i in 0..num_to_pack {
-            let mut pt: PolyMatrixRaw<'_> = PolyMatrixRaw::zero(&params, 1, 1);
+            let mut pt: PolyMatrixRaw = PolyMatrixRaw::zero(&params, 1, 1);
             let val = gold.data[i];
             let scale_k = params.modulus / params.pt_modulus;
             // let mod_inv = invert_uint_mod(num_to_pack as u64, params.modulus).unwrap();
@@ -3815,7 +3813,7 @@ mod test {
 
         ///////////////////////// Result Extract
 
-        let dec: PolyMatrixNTT<'_> = client.decrypt_matrix_reg(&packed.ntt());
+        let dec: PolyMatrixNTT = client.decrypt_matrix_reg(&packed.ntt());
         let dec_raw = dec.raw();
         // let scale = params.modulus / params.pt_modulus;
 

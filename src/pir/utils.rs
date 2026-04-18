@@ -34,7 +34,7 @@ pub fn negacyclic_matrix(a: &[u64], modulus: u64, how_many: usize) -> Vec<u64> {
     out
 }
 
-pub fn get_negacylic<'a>(poly: &PolyMatrixRaw<'a>) -> PolyMatrixRaw<'a> {
+pub fn get_negacylic<'a>(poly: &PolyMatrixRaw) -> PolyMatrixRaw {
     let mut out = poly.clone();
 
     (&mut out.as_mut_slice()[1..]).reverse();
@@ -75,7 +75,8 @@ pub fn add_into_at_no_reduce(
     t_row: usize,
     t_col: usize,
 ) {
-    let params = res.params;
+    let params = res.params.clone();
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let res_poly = res.get_poly_mut(t_row + i, t_col + j);
@@ -87,8 +88,9 @@ pub fn add_into_at_no_reduce(
     }
 }
 
-pub fn modular_reduce_poly<'a>(a: &mut PolyMatrixNTT<'a>) {
-    let params = a.params;
+pub fn modular_reduce_poly<'a>(a: &mut PolyMatrixNTT) {
+    let params = a.params.clone();
+    let params = params.as_ref();
     for i in 0..a.rows {
         for j in 0..a.cols {
             let pol = a.get_poly_mut(i, j);
@@ -104,7 +106,8 @@ pub fn scalar_multiply_avx(res: &mut PolyMatrixNTT, a: &PolyMatrixNTT, b: &PolyM
     assert_eq!(a.rows, 1);
     assert_eq!(a.cols, 1);
 
-    let params = res.params;
+    let params = res.params.clone();
+    let params = params.as_ref();
     let pol2 = a.get_poly(0, 0);
     for i in 0..b.rows {
         for j in 0..b.cols {
@@ -216,7 +219,7 @@ mod test {
     fn test_negacyclic_mul_db_col() {
         let params = test_params();
         let pol_a = PolyMatrixRaw::random(&params, 1, 1);
-        let pol_b: PolyMatrixRaw<'_> = PolyMatrixRaw::random(&params, 1, 1);
+        let pol_b: PolyMatrixRaw = PolyMatrixRaw::random(&params, 1, 1);
         let a = pol_a.get_poly(0, 0);
         let b = pol_b.get_poly(0, 0);
         let negacylic_a = negacyclic_matrix(&a, params.modulus, params.poly_len);

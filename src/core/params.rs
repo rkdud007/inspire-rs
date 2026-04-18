@@ -95,7 +95,7 @@ impl Params {
         self.ntt_tables[i][3].as_slice()
     }
 
-    pub fn get_v_neg1(&self) -> Vec<PolyMatrixNTT<'_>> {
+    pub fn get_v_neg1(&self) -> Vec<PolyMatrixNTT> {
         let mut v_neg1 = Vec::new();
         for i in 0..self.poly_len_log2 {
             let idx = self.poly_len - (1 << i);

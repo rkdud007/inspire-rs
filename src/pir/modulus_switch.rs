@@ -13,7 +13,7 @@ pub trait ModulusSwitch<'a> {
     ) -> Self;
 }
 
-impl<'a> ModulusSwitch<'a> for PolyMatrixRaw<'a> {
+impl<'a> ModulusSwitch<'a> for PolyMatrixRaw {
     fn switch(&self, q_1: u64, q_2: u64) -> Vec<u8> {
         assert_eq!(self.rows, 2);
         assert_eq!(self.cols, 1);

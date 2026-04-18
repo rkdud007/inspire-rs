@@ -234,9 +234,9 @@ fn read_raw_crt_poly(
 
 pub fn serialize_everything(
     params: &Params,
-    packing_keys: &mut PackingKeys<'_>,
+    packing_keys: &mut PackingKeys,
     packed_query_row: AlignedMemory64,
-    ct_gsw_body: PolyMatrixNTT<'_>,
+    ct_gsw_body: PolyMatrixNTT,
 ) -> Vec<u8> {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, crt1_bits) = crt_bits(params);
@@ -311,7 +311,7 @@ pub fn deserialize_everything<'a>(
     params: &'a Params,
     packing_params: &'a PackParams,
     all_u8: Vec<u8>,
-) -> (PackingKeys<'a>, AlignedMemory64, PolyMatrixNTT<'a>) {
+) -> (PackingKeys, AlignedMemory64, PolyMatrixNTT) {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, crt1_bits) = crt_bits(params);
     let total_bits = crt0_bits + crt1_bits;
@@ -569,14 +569,14 @@ pub fn read_file_into_matrix(
 // ============================================================================
 
 #[derive(Clone)]
-pub struct KeywordQuery<'a> {
+pub struct KeywordQuery {
     pub packed_query_row: AlignedMemory64,
-    pub ct_gsw_body: PolyMatrixNTT<'a>,
+    pub ct_gsw_body: PolyMatrixNTT,
 }
 
-pub struct DecodedKeywordQuery<'a> {
-    pub packing_keys: PackingKeys<'a>,
-    pub queries: Vec<KeywordQuery<'a>>,
+pub struct DecodedKeywordQuery {
+    pub packing_keys: PackingKeys,
+    pub queries: Vec<KeywordQuery>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -597,8 +597,8 @@ pub struct KeywordResponsePayload {
 /// Format: [u8 num_queries][bit-packed: keys | per-query (query_row + rgsw_body)]
 pub fn serialize_keyword_query(
     params: &Params,
-    packing_keys: &mut PackingKeys<'_>,
-    queries: &[KeywordQuery<'_>],
+    packing_keys: &mut PackingKeys,
+    queries: &[KeywordQuery],
 ) -> Vec<u8> {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, _crt1_bits) = crt_bits(params);
@@ -677,7 +677,7 @@ pub fn deserialize_keyword_query<'a>(
     params: &'a Params,
     packing_params: &'a PackParams,
     all_u8: Vec<u8>,
-) -> DecodedKeywordQuery<'a> {
+) -> DecodedKeywordQuery {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, crt1_bits) = crt_bits(params);
     let total_bits = crt0_bits + crt1_bits;

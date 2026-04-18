@@ -16,7 +16,7 @@ use crate::util::*;
 
 use rayon::prelude::*;
 
-pub fn coefficient_expansion(
+pub fn coefficient_expansion<'a>(
     v: &mut Vec<PolyMatrixNTT>,
     g: usize,
     stop_round: usize,
@@ -121,9 +121,9 @@ pub fn coefficient_expansion(
 }
 
 pub fn regev_to_gsw<'a>(
-    v_gsw: &mut Vec<PolyMatrixNTT<'a>>,
-    v_inp: &Vec<PolyMatrixNTT<'a>>,
-    v: &PolyMatrixNTT<'a>,
+    v_gsw: &mut Vec<PolyMatrixNTT>,
+    v_inp: &Vec<PolyMatrixNTT>,
+    v: &PolyMatrixNTT,
     params: &'a Params,
     idx_factor: usize,
     idx_offset: usize,
@@ -152,7 +152,7 @@ pub fn regev_to_gsw<'a>(
 
 pub const PACKED_OFFSET_2: i32 = 32;
 
-pub fn multiply_reg_by_database(
+pub fn multiply_reg_by_database<'a>(
     out: &mut Vec<PolyMatrixNTT>,
     db: &[u64],
     v_firstdim: &[u64],
@@ -223,7 +223,7 @@ pub fn multiply_reg_by_database(
 pub fn generate_random_db_and_get_item<'a>(
     params: &'a Params,
     item_idx: usize,
-) -> (PolyMatrixRaw<'a>, AlignedMemory64) {
+) -> (PolyMatrixRaw, AlignedMemory64) {
     let mut rng = get_seeded_rng();
 
     let instances = params.instances;
@@ -280,7 +280,7 @@ pub fn load_item_from_seek<'a, T: Seek + Read>(
     instance: usize,
     trial: usize,
     item_idx: usize,
-) -> PolyMatrixRaw<'a> {
+) -> PolyMatrixRaw {
     let db_item_size = params.db_item_size;
     let instances = params.instances;
     let trials = params.n * params.n;
@@ -385,7 +385,7 @@ pub fn load_preprocessed_db_from_file(params: &Params, file: &mut File) -> Align
     v
 }
 
-pub fn fold_ciphertexts(
+pub fn fold_ciphertexts<'a>(
     params: &Params,
     v_cts: &mut Vec<PolyMatrixRaw>,
     v_folding: &Vec<PolyMatrixNTT>,
@@ -430,7 +430,7 @@ pub fn pack<'a>(
     params: &'a Params,
     v_ct: &Vec<PolyMatrixRaw>,
     v_w: &Vec<PolyMatrixNTT>,
-) -> PolyMatrixNTT<'a> {
+) -> PolyMatrixNTT {
     assert!(v_ct.len() >= params.n * params.n);
     assert!(v_w.len() == params.n);
     assert!(v_ct[0].rows == 2);
@@ -504,8 +504,8 @@ pub fn encode(params: &Params, v_packed_ct: &Vec<PolyMatrixRaw>) -> Vec<u8> {
 
 pub fn get_v_folding_neg<'a>(
     params: &'a Params,
-    v_folding: &Vec<PolyMatrixNTT<'a>>,
-) -> Vec<PolyMatrixNTT<'a>> {
+    v_folding: &Vec<PolyMatrixNTT>,
+) -> Vec<PolyMatrixNTT> {
     let gadget_ntt = build_gadget(params, 2, 2 * params.t_gsw).ntt(); // TODO: make this better
 
     let v_folding_neg = (0..params.db_dim_2)
@@ -524,9 +524,9 @@ pub fn get_v_folding_neg<'a>(
 
 pub fn expand_query<'a>(
     params: &'a Params,
-    public_params: &PublicParameters<'a>,
-    query: &Query<'a>,
-) -> (AlignedMemory64, Vec<PolyMatrixNTT<'a>>) {
+    public_params: &PublicParameters,
+    query: &Query,
+) -> (AlignedMemory64, Vec<PolyMatrixNTT>) {
     let dim0 = 1 << params.db_dim_1;
     let further_dims = params.db_dim_2;
 
@@ -604,9 +604,9 @@ pub fn variance(v: Vec<i64>) -> f64 {
 
 fn dec_to_raw<'a>(
     params: &'a Params,
-    poly: &PolyMatrixRaw<'a>,
-    target: &PolyMatrixRaw<'a>,
-) -> PolyMatrixRaw<'a> {
+    poly: &PolyMatrixRaw,
+    target: &PolyMatrixRaw,
+) -> PolyMatrixRaw {
     let mut out = PolyMatrixRaw::zero(params, poly.rows, poly.cols);
     let scale_k = params.modulus / params.pt_modulus;
     let mut noises = Vec::new();
@@ -756,8 +756,8 @@ mod test {
 
     fn dec_reg<'a>(
         params: &'a Params,
-        ct: &PolyMatrixNTT<'a>,
-        client: &mut Client<'a>,
+        ct: &PolyMatrixNTT,
+        client: &mut Client,
         scale_k: u64,
     ) -> u64 {
         let dec = client.decrypt_matrix_reg(ct).raw();
@@ -769,7 +769,7 @@ mod test {
         if val_rounded == 0 { 0 } else { 1 }
     }
 
-    fn dec_gsw<'a>(params: &'a Params, ct: &PolyMatrixNTT<'a>, client: &mut Client<'a>) -> u64 {
+    fn dec_gsw<'a>(params: &'a Params, ct: &PolyMatrixNTT, client: &mut Client) -> u64 {
         let dec = client.decrypt_matrix_reg(ct).raw();
         let idx = 2 * (params.t_gsw - 1) * params.poly_len + params.poly_len; // this offset should encode a large value
         let mut val = dec.data[idx] as i64;
@@ -1007,14 +1007,14 @@ mod test {
         unsafe {
             let params_static = Box::leak(Box::new(params.clone()));
             let mut corr_item_static =
-                PolyMatrixRaw::zero(params_static, corr_item.rows, corr_item.cols);
+                PolyMatrixRaw::zero(&*params_static, corr_item.rows, corr_item.cols);
             corr_item_static
                 .data
                 .as_mut_slice()
                 .copy_from_slice(corr_item.data.as_slice());
             let sk_reg_full = matrix_with_identity(client.get_sk_reg());
             let mut sk_reg_static =
-                PolyMatrixRaw::zero(params_static, sk_reg_full.rows, sk_reg_full.cols);
+                PolyMatrixRaw::zero(&*params_static, sk_reg_full.rows, sk_reg_full.cols);
             sk_reg_static
                 .data
                 .as_mut_slice()
