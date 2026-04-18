@@ -1,0 +1,43 @@
+[package]
+name = "inspire-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.39", features = ["derive"] }
+env_logger = "0.11.8"
+hex = "0.4.3"
+log = "0.4.20"
+ml-kem = { path = "../KEMs/ml-kem" }
+rand = { version = "0.10.0", features = ["thread_rng"] }
+rand_chacha = "0.10.0"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha3 = "0.11.0"
+siphasher = "1"
+subtle = "2.4"
+fastrand = "2.0.1"
+
+[build-dependencies]
+cc = "1.0"
+
+[dev-dependencies]
+test-log = "0.2.14"
+
+[features]
+default = []
+gpu = []
+
+[[bin]]
+name = "gen_dataset"
+path = "src/bin/gen_dataset.rs"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "client"
+path = "src/bin/client.rs"
