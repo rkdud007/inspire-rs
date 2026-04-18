@@ -158,7 +158,7 @@ pub fn ct_reg_measure<'a>(
 }
 
 pub struct YClient<'a> {
-    inner: &'a mut Client<'a>,
+    inner: &'a Client<'a>,
     params: &'a Params,
     lwe_client: LWEClient,
 }
@@ -202,7 +202,7 @@ pub fn generate_matrix_ring(
 }
 
 impl<'a> YClient<'a> {
-    pub fn new(inner: &'a mut Client<'a>, params: &'a Params) -> Self {
+    pub fn new(inner: &'a Client<'a>, params: &'a Params) -> Self {
         Self {
             inner,
             params,

@@ -1,37 +1,25 @@
 use std::collections::HashMap;
-use std::io;
 use std::marker::PhantomData;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
-use rand::SeedableRng;
-use rand_chacha::ChaCha20Rng;
-use rayon::prelude::*;
 
 use inspire_rs::aligned_memory::AlignedMemory64;
 use inspire_rs::commons::params_rgswpir_given_input_size_and_dim0;
-use inspire_rs::commons::{
-    HandshakeParams, KeywordPirHandshake, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE,
-    RGSW_SEEDS, deserialize_keyword_query, recv_msg, send_msg, serialize_keyword_response,
-};
-use inspire_rs::gadget::gadget_invert;
+use inspire_rs::commons::{MSG_HANDSHAKE, send_msg};
 use inspire_rs::gpu::encode as cuda_encode;
 use inspire_rs::gpu::gemv as cuda_gemv;
 use inspire_rs::gpu::packing_online as cuda_packing_online;
-use inspire_rs::kv::cuckoo::{CuckooParams, CuckooTable, DETERMINISTIC_SEED};
-use inspire_rs::modulus_switch::*;
 use inspire_rs::number_theory::invert_uint_mod;
-use inspire_rs::packing::{PackParams, PackingType, PrecompInsPIR};
+use inspire_rs::packing::{PackParams, PackingType};
 use inspire_rs::params::Params;
-use inspire_rs::pir::engine::YServer;
 use inspire_rs::pir::measurement::Measurement;
-use inspire_rs::pir::params::GetQPrime;
 use inspire_rs::pir::scheme::ProtocolType;
-use inspire_rs::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw, multiply, to_ntt};
+use inspire_rs::pir::server::{KeywordServer, YServer, build_cuckoo_table, default_bucket_count};
 
-use inspire_rs::{Dataset, PUBLIC_KEY_ID_LEN, load_dataset};
+use inspire_rs::{PUBLIC_KEY_ID_LEN, load_dataset};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,140 +42,6 @@ struct Args {
     /// First-dimension size override.
     #[arg(long)]
     dim0: Option<usize>,
-}
-
-fn default_bucket_count(record_count: usize) -> usize {
-    (record_count.max(512) * 2).next_power_of_two()
-}
-
-fn build_cuckoo_table(dataset: &Dataset, num_items: usize) -> CuckooTable {
-    let params = CuckooParams::new(
-        num_items,
-        PUBLIC_KEY_ID_LEN,
-        dataset.public_key_len,
-        0,
-        DETERMINISTIC_SEED,
-    );
-    let mut table = CuckooTable::new(params);
-
-    for record in &dataset.records {
-        table.insert(&record.public_key_id, &record.public_key);
-    }
-
-    table
-}
-
-fn process_keyword_query(
-    stream: &mut TcpStream,
-    table: &CuckooTable,
-    params: &Params,
-    pack_params: &PackParams,
-    precomp_inspir_vec: &[PrecompInsPIR<'_>],
-    db_rows: usize,
-    db_cols: usize,
-    gamma: usize,
-    interpolate_degree: usize,
-    c: usize,
-    rlwe_q_prime_1: u64,
-    rlwe_q_prime_2: u64,
-) -> io::Result<()> {
-    let (msg_type, query_bytes) = recv_msg(stream)?;
-    if msg_type != MSG_KEYWORD_QUERY {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unexpected message type: {msg_type}"),
-        ));
-    }
-
-    let (packing_keys, per_query) = deserialize_keyword_query(params, pack_params, query_bytes);
-    cuda_packing_online::gpu_expand_and_set_keys(
-        packing_keys.y_body_condensed.as_ref().unwrap(),
-        packing_keys.z_body_condensed.as_ref().unwrap(),
-        params,
-    );
-
-    let rgsw_fold_and_switch = |ct_gsw_body: &PolyMatrixNTT<'_>,
-                                packed: &[PolyMatrixRaw<'_>]|
-     -> Vec<u8> {
-        let mut ct_gsw = ct_gsw_body.pad_top(1);
-        for i in 0..ct_gsw.cols {
-            let a =
-                PolyMatrixRaw::random_rng(params, 1, 1, &mut ChaCha20Rng::from_seed(RGSW_SEEDS[i]));
-            ct_gsw.copy_into(&(-&a).ntt(), 0, i);
-        }
-
-        let ell = ct_gsw.cols / 2;
-        let rgsw_results: Vec<PolyMatrixRaw<'_>> = (0..c)
-            .into_par_iter()
-            .map(|which_poly| {
-                let mut ginv_c = PolyMatrixRaw::zero(params, 2 * ell, 1);
-                let mut ginv_c_ntt = PolyMatrixNTT::zero(params, 2 * ell, 1);
-                let mut sum = PolyMatrixRaw::zero(params, 2, 1);
-                for i in (0..interpolate_degree).rev() {
-                    let mut prod = PolyMatrixNTT::zero(params, 2, 1);
-                    gadget_invert(&mut ginv_c, &sum);
-                    to_ntt(&mut ginv_c_ntt, &ginv_c);
-                    multiply(&mut prod, &ct_gsw, &ginv_c_ntt);
-                    sum = &prod.raw() + &packed[which_poly * interpolate_degree + i];
-                    sum.reduce_mod(params.modulus);
-                }
-                sum
-            })
-            .collect();
-
-        rgsw_results
-            .iter()
-            .map(|ct| ct.switch_and_keep(rlwe_q_prime_1, rlwe_q_prime_2, gamma))
-            .collect::<Vec<_>>()
-            .concat()
-    };
-
-    let gpu_first_pass = |packed_query_row: &AlignedMemory64| -> Vec<PolyMatrixRaw<'_>> {
-        let mut intermediate = AlignedMemory64::new(db_cols);
-        cuda_gemv::gpu_gemv(
-            intermediate.as_mut_slice(),
-            packed_query_row.as_slice(),
-            db_rows,
-            db_cols,
-            &params.moduli,
-            &params.barrett_cr_1,
-            params.mod0_inv_mod1,
-            params.mod1_inv_mod0,
-            params.modulus,
-            params.barrett_cr_0_modulus,
-            params.barrett_cr_1_modulus,
-        );
-        cuda_packing_online::gpu_packing_online_run(
-            params,
-            precomp_inspir_vec,
-            intermediate.as_slice(),
-            gamma,
-        )
-    };
-
-    let mut all_responses = Vec::with_capacity(per_query.len());
-    if per_query.len() == 2 {
-        let packed_0 = gpu_first_pass(&per_query[0].0);
-        let (response_0, packed_1) = rayon::join(
-            || rgsw_fold_and_switch(&per_query[0].1, &packed_0),
-            || gpu_first_pass(&per_query[1].0),
-        );
-        let response_1 = rgsw_fold_and_switch(&per_query[1].1, &packed_1);
-        all_responses.push(response_0);
-        all_responses.push(response_1);
-    } else {
-        for (packed_query_row, ct_gsw_body) in &per_query {
-            let packed = gpu_first_pass(packed_query_row);
-            let response = rgsw_fold_and_switch(ct_gsw_body, &packed);
-            all_responses.push(response);
-        }
-    }
-
-    let stash_entries = table.stash.clone();
-    let empty_sidecar: [(Vec<u8>, Vec<u8>); 0] = [];
-    let response_data =
-        serialize_keyword_response(&all_responses, &stash_entries, &empty_sidecar, 0);
-    send_msg(stream, MSG_KEYWORD_RESPONSE, &response_data)
 }
 
 fn log(msg: &str) {
@@ -262,7 +116,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let gamma = params.poly_len;
-    let poly_len = params.poly_len;
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let db_cols = params.instances * params.poly_len;
     let db_cols_prime = db_cols / gamma;
@@ -354,24 +207,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log("rotation tables uploaded");
     }
 
-    let pack_params = PackParams::new_fast(params, gamma);
-    let rlwe_q_prime_1 = params.get_q_prime_1();
-    let rlwe_q_prime_2 = params.get_q_prime_2();
-
-    let handshake = HandshakeParams {
+    let keyword_server = KeywordServer::new(
+        table,
+        params,
+        precomp_inspir_vec,
         num_items,
-        item_size_bits,
+        entry_size,
         dim0,
-        keyword_pir: Some(KeywordPirHandshake {
-            cuckoo_seed: DETERMINISTIC_SEED.to_vec(),
-            num_hashes: 2,
-            key_size: PUBLIC_KEY_ID_LEN,
-            value_size: dataset.public_key_len,
-            entry_size,
-            num_accounts: dataset.records.len(),
-            kem_name: dataset.kem_name.clone(),
-        }),
-    };
+        dataset.kem_name.clone(),
+        interpolate_degree,
+    );
+    let handshake = keyword_server.handshake();
     let handshake_json = serde_json::to_vec(&handshake)?;
 
     println!(
@@ -403,20 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             let start = Instant::now();
-            match process_keyword_query(
-                &mut stream,
-                &table,
-                params,
-                &pack_params,
-                &precomp_inspir_vec,
-                db_rows,
-                db_cols,
-                gamma,
-                interpolate_degree,
-                c,
-                rlwe_q_prime_1,
-                rlwe_q_prime_2,
-            ) {
+            match keyword_server.process_query(&mut stream) {
                 Ok(()) => {
                     println!(
                         "query answered in {:.1}ms",
