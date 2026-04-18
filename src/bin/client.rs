@@ -3,21 +3,21 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
+use inspire_rs::client::Client;
 use inspire_rs::commons::params_rgswpir_given_input_size_and_dim0;
 use inspire_rs::commons::{
     HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS,
     deserialize_keyword_response, recv_msg, send_msg, serialize_keyword_query,
 };
+use inspire_rs::gadget::get_bits_per;
 use inspire_rs::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
 use inspire_rs::modulus_switch::ModulusSwitch;
 use inspire_rs::packing::{PackParams, PackingKeys, PackingType};
+use inspire_rs::params::Params;
 use inspire_rs::pir::client::{YClient, decrypt_ct_reg_measured, pack_query};
 use inspire_rs::pir::params::GetQPrime;
 use inspire_rs::pir::scheme::{SEED_0, V_SEED, W_SEED};
-use inspire_rs::spiral::client::Client;
-use inspire_rs::spiral::gadget::get_bits_per;
-use inspire_rs::spiral::params::Params;
-use inspire_rs::spiral::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
+use inspire_rs::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
@@ -85,7 +85,7 @@ fn generate_query_for_index<'a>(
     gamma: usize,
     db_rows: usize,
 ) -> (
-    inspire_rs::spiral::aligned_memory::AlignedMemory64,
+    inspire_rs::aligned_memory::AlignedMemory64,
     PolyMatrixNTT<'a>,
 ) {
     let per = num_items / db_rows;

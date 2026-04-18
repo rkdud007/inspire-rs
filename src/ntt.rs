@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-use crate::spiral::{arith::*, number_theory::*, params::*};
+use crate::{arith::*, number_theory::*, params::*};
 
 pub fn powers_of_primitive_root(root: u64, modulus: u64, poly_len_log2: usize) -> Vec<u64> {
     let poly_len = 1usize << poly_len_log2;
@@ -784,7 +784,7 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::spiral::{aligned_memory::AlignedMemory64, util::*};
+    use crate::{aligned_memory::AlignedMemory64, util::*};
     use rand::RngExt;
 
     fn get_params() -> Params {

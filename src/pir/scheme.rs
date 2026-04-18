@@ -13,13 +13,13 @@ use rand::Rng;
 use rand::RngExt;
 
 #[allow(unused_imports)]
-use crate::spiral::aligned_memory::AlignedMemory64;
+use crate::aligned_memory::AlignedMemory64;
 #[allow(unused_imports)]
-use crate::spiral::arith::rescale;
+use crate::arith::rescale;
 #[allow(unused_imports)]
-use crate::spiral::poly::{PolyMatrix, PolyMatrixRaw};
+use crate::poly::{PolyMatrix, PolyMatrixRaw};
 #[allow(unused_imports)]
-use crate::spiral::{client::*, params::*};
+use crate::{client::*, params::*};
 
 #[allow(unused_imports)]
 use crate::bits::{read_bits, u64s_to_contiguous_bytes};

@@ -1,4 +1,4 @@
-use crate::spiral::{arith::*, params::*, poly::*, util::*};
+use crate::{arith::*, params::*, poly::*, util::*};
 
 pub trait ModulusSwitch<'a> {
     fn switch(&self, q_1: u64, q_2: u64) -> Vec<u8>;

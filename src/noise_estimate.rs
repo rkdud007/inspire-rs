@@ -1,6 +1,6 @@
 use std::f64::consts::{E, PI};
 
-use crate::spiral::{
+use crate::{
     client::HAMMING_WEIGHT,
     params::{Params, Q2_VALUES},
 };
@@ -137,7 +137,7 @@ impl NoiseEstimator for Params {
 
 #[cfg(test)]
 mod test {
-    use crate::spiral::util::*;
+    use crate::util::*;
 
     use super::*;
 

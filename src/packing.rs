@@ -5,8 +5,8 @@ use std::time::Instant;
 use log::debug;
 use rayon::prelude::*;
 
-// use crate::spiral::poly::multiply_add_poly_avx;
-use crate::spiral::{
+// use crate::poly::multiply_add_poly_avx;
+use crate::{
     arith::*, discrete_gaussian::*, gadget::*, ntt::*, number_theory::invert_uint_mod, params::*,
     poly::*,
 };
@@ -16,9 +16,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::str::FromStr;
 
+use crate::inspire_util::*;
 use crate::pir::client::*;
 use crate::pir::measurement::*;
-use crate::util::*;
 
 pub fn gadget_invert_transposed_alloc<'a>(
     inp: &PolyMatrixRaw<'a>,
@@ -3328,7 +3328,7 @@ pub fn query_gen<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::spiral::{client::Client, number_theory::invert_uint_mod};
+    use crate::{client::Client, number_theory::invert_uint_mod};
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 

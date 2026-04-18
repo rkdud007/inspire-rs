@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use log::debug;
 
-use crate::spiral::{arith::rescale, client::Client, params::Params, poly::*};
+use crate::{arith::rescale, client::Client, params::Params, poly::*};
 
 use crate::lwe::LWEParams;
 use crate::pir::params::{GetQPrime, params_for_scenario};
@@ -307,11 +307,11 @@ pub fn measure_noise_width_bits<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arith::barrett_reduction_u128;
     use crate::pir::{
         client::{YClient, decrypt_ct_reg_measured},
         scheme::SEED_0,
     };
-    use crate::spiral::arith::barrett_reduction_u128;
 
     #[test]
     fn test_new_calc() {

@@ -1,4 +1,4 @@
-use crate::spiral::{params::*, poly::*};
+use crate::{params::*, poly::*};
 
 pub fn get_bits_per(params: &Params, dim: usize) -> usize {
     let modulus_log2 = params.modulus_log2;
@@ -71,7 +71,7 @@ pub fn gadget_invert_alloc<'a>(mx: usize, inp: &PolyMatrixRaw<'a>) -> PolyMatrix
 
 #[cfg(test)]
 mod test {
-    use crate::spiral::util::get_test_params;
+    use crate::util::get_test_params;
 
     use super::*;
 

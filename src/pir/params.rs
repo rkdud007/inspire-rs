@@ -1,7 +1,7 @@
 use log::debug;
 use serde_json::Value;
 
-use crate::spiral::{arith::*, params::*};
+use crate::{arith::*, params::*};
 
 use crate::lwe::LWEParams;
 

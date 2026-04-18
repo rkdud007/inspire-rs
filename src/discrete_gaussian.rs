@@ -5,7 +5,7 @@ use rand_chacha::ChaCha20Rng;
 use subtle::ConditionallySelectable;
 use subtle::ConstantTimeGreater;
 
-use crate::spiral::poly::*;
+use crate::poly::*;
 use std::f64::consts::PI;
 
 pub const NUM_WIDTHS: usize = 4;
@@ -159,7 +159,7 @@ impl DiscreteGaussian {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::spiral::util::*;
+    use crate::util::*;
 
     #[test]
     fn dg_seems_okay() {

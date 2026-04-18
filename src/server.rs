@@ -4,15 +4,15 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 
-use crate::spiral::aligned_memory::*;
-use crate::spiral::arith::*;
-use crate::spiral::client::CLIENT_TEST;
-use crate::spiral::client::PublicParameters;
-use crate::spiral::client::Query;
-use crate::spiral::gadget::*;
-use crate::spiral::params::*;
-use crate::spiral::poly::*;
-use crate::spiral::util::*;
+use crate::aligned_memory::*;
+use crate::arith::*;
+use crate::client::CLIENT_TEST;
+use crate::client::PublicParameters;
+use crate::client::Query;
+use crate::gadget::*;
+use crate::params::*;
+use crate::poly::*;
+use crate::util::*;
 
 use rayon::prelude::*;
 
@@ -746,7 +746,7 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::spiral::{client::*, ntt::ntt_forward};
+    use crate::{client::*, ntt::ntt_forward};
     use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
@@ -873,7 +873,7 @@ mod test {
         let num_per = 1 << params.db_dim_2;
         let scale_k = params.modulus / params.pt_modulus;
 
-        let target_idx = seeded_rng.r#gen::<usize>() % (dim0 * num_per);
+        let target_idx = (seeded_rng.random::<u64>() as usize) % (dim0 * num_per);
         let target_idx_dim0 = target_idx / num_per;
         let target_idx_num_per = target_idx % num_per;
 
@@ -930,7 +930,7 @@ mod test {
         let num_per = 1 << params.db_dim_2;
         let scale_k = params.modulus / params.pt_modulus;
 
-        let target_idx = seeded_rng.r#gen::<usize>() % (dim0 * num_per);
+        let target_idx = (seeded_rng.random::<u64>() as usize) % (dim0 * num_per);
         let target_idx_num_per = target_idx % num_per;
 
         let mut client = Client::init(&params);
@@ -990,7 +990,8 @@ mod test {
     fn full_protocol_is_correct_for_params(params: &Params) {
         let mut seeded_rng = get_seeded_rng();
 
-        let target_idx = seeded_rng.r#gen::<usize>() % (1 << (params.db_dim_1 + params.db_dim_2));
+        let target_idx =
+            (seeded_rng.random::<u64>() as usize) % (1 << (params.db_dim_1 + params.db_dim_2));
         println!("target_idx: {}", target_idx);
 
         let mut client = Client::init(&params);
@@ -1082,7 +1083,7 @@ mod test {
         }
 
         let now = Instant::now();
-        for (i, gi_ct_ntt) in gi_ct_ntts.iter_mut().enumerate() {
+        for gi_ct_ntt in gi_ct_ntts.iter_mut() {
             // to_ntt_no_reduce(&mut gi_ct_ntts[i], gi_ct);
             ntt_forward(&params, gi_ct_ntt.as_mut_slice());
         }

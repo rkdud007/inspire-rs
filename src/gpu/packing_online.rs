@@ -1,12 +1,12 @@
 // Rust FFI wrapper for GPU-accelerated online packing
 
-use crate::spiral::params::Params;
-use crate::spiral::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
+use crate::params::Params;
+use crate::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::packing::{PackParams, PrecompInsPIR};
-use crate::spiral::poly::add_raw;
+use crate::poly::add_raw;
 
 #[allow(dead_code)]
 unsafe extern "C" {

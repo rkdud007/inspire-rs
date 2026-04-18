@@ -1,17 +1,29 @@
+pub mod aligned_memory;
+pub mod arith;
 pub mod bits;
+pub mod client;
 pub mod commons;
 pub mod convolution;
 pub mod dataset;
+pub mod discrete_gaussian;
+pub mod gadget;
 pub mod gpu;
+#[allow(dead_code)]
+pub(crate) mod inspire_util;
 pub mod kem;
 pub mod kv;
 pub mod lwe;
 pub mod matmul;
 pub mod modulus_switch;
 pub mod noise_analysis;
+pub mod noise_estimate;
+pub mod ntt;
+pub mod number_theory;
 pub mod packing;
+pub mod params;
 pub mod pir;
-pub mod spiral;
+pub mod poly;
+pub mod server;
 pub mod transpose;
 pub mod util;
 

@@ -1,4 +1,4 @@
-use crate::spiral::params::*;
+use crate::params::*;
 use std::mem;
 use std::slice;
 
@@ -453,7 +453,7 @@ pub fn rescale(a: u64, inp_mod: u64, out_mod: u64) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::spiral::util::get_seeded_rng;
+    use crate::util::get_seeded_rng;
     use rand::RngExt;
 
     fn combine(lo: u64, hi: u64) -> u128 {

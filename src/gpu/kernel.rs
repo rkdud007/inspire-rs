@@ -1,6 +1,6 @@
 use std::arch::x86_64::*;
 
-use crate::spiral::{arith::*, params::*};
+use crate::{arith::*, params::*};
 
 use crate::pir::engine::ToM512;
 
@@ -388,11 +388,11 @@ pub fn fast_batched_dot_product_generic<T: Copy>(
 mod test {
     use std::time::Instant;
 
-    use crate::spiral::aligned_memory::AlignedMemory64;
-    use crate::spiral::poly::*;
+    use crate::aligned_memory::AlignedMemory64;
+    use crate::poly::*;
     use log::debug;
 
-    use super::super::util::test_params;
+    use super::super::inspire_util::test_params;
     use super::*;
     use test_log::test;
 

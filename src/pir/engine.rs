@@ -12,9 +12,9 @@ use log::debug;
 use rand::{Rng, RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-use crate::spiral::aligned_memory::AlignedMemory64;
+use crate::aligned_memory::AlignedMemory64;
 #[allow(unused_imports)]
-use crate::spiral::{arith::*, client::*, params::*, poly::*};
+use crate::{arith::*, client::*, params::*, poly::*};
 #[allow(unused_imports)]
 use rayon::prelude::*;
 
@@ -35,12 +35,12 @@ use crate::gpu::kernel::*;
 use crate::{
     bits::*,
     convolution::{Convolution, negacyclic_perm_u32},
+    inspire_util::*,
     lwe::*,
     matmul::matmul_vec_packed,
     modulus_switch::ModulusSwitch,
     packing::*,
     transpose::*,
-    util::*,
 };
 
 pub fn generate_y_constants<'a>(

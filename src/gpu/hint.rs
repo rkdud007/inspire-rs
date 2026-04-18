@@ -1,7 +1,7 @@
 // Rust FFI wrapper for GPU-accelerated hint computation
 
-use crate::spiral::params::Params;
-use crate::spiral::poly::{PolyMatrix, PolyMatrixNTT};
+use crate::params::Params;
+use crate::poly::{PolyMatrix, PolyMatrixNTT};
 
 unsafe extern "C" {
     fn gpu_hint_upload_tables(h_ntt_tables: *const u64, poly_len: i32);

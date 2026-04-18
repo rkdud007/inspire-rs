@@ -1,11 +1,11 @@
 use super::packing::PackingType;
+use crate::aligned_memory::AlignedMemory64;
+use crate::arith::log2_ceil;
 use crate::packing::*;
+use crate::params::*;
 use crate::pir::params::*;
-use crate::spiral::aligned_memory::AlignedMemory64;
-use crate::spiral::arith::log2_ceil;
-use crate::spiral::params::*;
-use crate::spiral::poly::{PolyMatrix, PolyMatrixNTT};
-use crate::spiral::util::{read_arbitrary_bits, write_arbitrary_bits};
+use crate::poly::{PolyMatrix, PolyMatrixNTT};
+use crate::util::{read_arbitrary_bits, write_arbitrary_bits};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

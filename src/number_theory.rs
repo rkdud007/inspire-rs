@@ -1,4 +1,4 @@
-use crate::spiral::arith::*;
+use crate::arith::*;
 use rand::RngExt;
 
 const ATTEMPT_MAX: usize = 100;

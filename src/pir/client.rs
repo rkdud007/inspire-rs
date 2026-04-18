@@ -4,8 +4,8 @@ use log::debug;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-use crate::spiral::aligned_memory::AlignedMemory64;
-use crate::spiral::{
+use crate::aligned_memory::AlignedMemory64;
+use crate::{
     arith::*, client::*, discrete_gaussian::*, gadget::*, number_theory::*, params::*, poly::*,
 };
 
@@ -13,7 +13,7 @@ use crate::packing::PackingType;
 
 use super::scheme::*;
 use crate::convolution::negacyclic_matrix_u32;
-use crate::{lwe::*, noise_analysis::measure_noise_width_squared, util::*};
+use crate::{inspire_util::*, lwe::*, noise_analysis::measure_noise_width_squared};
 
 pub fn rlwe_to_lwe<'a>(params: &'a Params, ct: &PolyMatrixRaw<'a>, how_many: usize) -> Vec<u64> {
     let a = ct.get_poly(0, 0);

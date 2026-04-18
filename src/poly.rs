@@ -7,9 +7,7 @@ use rand_chacha::ChaCha20Rng;
 use std::cell::RefCell;
 use std::ops::{Add, Mul, Neg};
 
-use crate::spiral::{
-    aligned_memory::*, arith::*, discrete_gaussian::*, ntt::*, params::*, util::*,
-};
+use crate::{aligned_memory::*, arith::*, discrete_gaussian::*, ntt::*, params::*, util::*};
 
 const SCRATCH_SPACE: usize = 8192;
 thread_local!(static SCRATCH: RefCell<AlignedMemory64> = RefCell::new(AlignedMemory64::new(SCRATCH_SPACE)));

@@ -1,4 +1,4 @@
-use crate::spiral::aligned_memory::AlignedMemory64;
+use crate::aligned_memory::AlignedMemory64;
 
 pub fn as_bytes(a_m: &AlignedMemory64) -> &[u8] {
     unsafe { std::slice::from_raw_parts(a_m.as_ptr() as *const u8, a_m.len() * 8) }

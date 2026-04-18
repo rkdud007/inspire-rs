@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::spiral::poly::PolyMatrixNTT;
+use crate::poly::PolyMatrixNTT;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]

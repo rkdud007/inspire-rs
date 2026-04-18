@@ -1,9 +1,9 @@
 // Rust FFI wrapper for GPU-accelerated InspiRING collapse kernel
 
+use crate::gadget::get_bits_per;
 use crate::packing::PackParams;
-use crate::spiral::gadget::get_bits_per;
-use crate::spiral::params::Params;
-use crate::spiral::poly::{PolyMatrix, PolyMatrixNTT};
+use crate::params::Params;
+use crate::poly::{PolyMatrix, PolyMatrixNTT};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[allow(dead_code)]

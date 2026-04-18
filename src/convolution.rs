@@ -5,7 +5,7 @@
 // bits long. Then convolve using standard FFT, multiply pointwise, and take
 // inverse FFT.
 
-use crate::spiral::{arith::barrett_coeff_u64, params::Params, poly::*};
+use crate::{arith::barrett_coeff_u64, params::Params, poly::*};
 
 use crate::pir::engine::ToU64;
 

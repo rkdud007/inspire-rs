@@ -1,7 +1,7 @@
 use rand::{RngExt, SeedableRng, distr::StandardUniform, rng};
 use rand_chacha::ChaCha20Rng;
 
-use crate::spiral::discrete_gaussian::*;
+use crate::discrete_gaussian::*;
 
 use super::convolution::negacyclic_matrix_u32;
 

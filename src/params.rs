@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use crate::spiral::{arith::*, client::SEED_LENGTH, ntt::*, number_theory::*, poly::*};
+use crate::{arith::*, client::SEED_LENGTH, ntt::*, number_theory::*, poly::*};
 
 pub const MAX_MODULI: usize = 4;
 

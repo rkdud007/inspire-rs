@@ -1,4 +1,4 @@
-use crate::spiral::{
+use crate::{
     arith::*, discrete_gaussian::*, gadget::*, number_theory::*, params::*, poly::*, util::*,
 };
 use rand::seq::SliceRandom;

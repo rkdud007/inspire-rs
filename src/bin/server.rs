@@ -10,26 +10,26 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
 
+use inspire_rs::aligned_memory::AlignedMemory64;
 use inspire_rs::commons::params_rgswpir_given_input_size_and_dim0;
 use inspire_rs::commons::{
     HandshakeParams, KeywordPirHandshake, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE,
     RGSW_SEEDS, deserialize_keyword_query, recv_msg, send_msg, serialize_keyword_response,
 };
+use inspire_rs::gadget::gadget_invert;
 use inspire_rs::gpu::encode as cuda_encode;
 use inspire_rs::gpu::gemv as cuda_gemv;
 use inspire_rs::gpu::packing_online as cuda_packing_online;
 use inspire_rs::kv::cuckoo::{CuckooParams, CuckooTable, DETERMINISTIC_SEED};
 use inspire_rs::modulus_switch::*;
+use inspire_rs::number_theory::invert_uint_mod;
 use inspire_rs::packing::{PackParams, PackingType, PrecompInsPIR};
+use inspire_rs::params::Params;
 use inspire_rs::pir::engine::YServer;
 use inspire_rs::pir::measurement::Measurement;
 use inspire_rs::pir::params::GetQPrime;
 use inspire_rs::pir::scheme::ProtocolType;
-use inspire_rs::spiral::aligned_memory::AlignedMemory64;
-use inspire_rs::spiral::gadget::gadget_invert;
-use inspire_rs::spiral::number_theory::invert_uint_mod;
-use inspire_rs::spiral::params::Params;
-use inspire_rs::spiral::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw, multiply, to_ntt};
+use inspire_rs::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw, multiply, to_ntt};
 
 use inspire_rs::{Dataset, PUBLIC_KEY_ID_LEN, load_dataset};
 
