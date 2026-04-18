@@ -1,13 +1,20 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use rayon::prelude::*;
 use sha3::{Digest, Sha3_256};
+
+use super::kem::KemVariant;
 
 /// Binary format version 2: magic + kem_name + count + pk_len + records.
 pub const DATASET_MAGIC: &[u8; 8] = b"PQKEYV2\0";
 pub const PUBLIC_KEY_ID_LEN: usize = 32;
 pub const PUBLIC_KEY_ID_DOMAIN: &[u8] = b"pq-key:v1:";
+pub const DEFAULT_DATASET_BATCH_SIZE: usize = 10_000;
 
 /// Canonical KEM name strings used in the dataset and ID derivation.
 pub const KEM_ML_KEM_512: &str = "ml-kem-512";
@@ -26,6 +33,75 @@ pub struct Dataset {
     pub kem_name: String,
     pub public_key_len: usize,
     pub records: Vec<DatasetRecord>,
+}
+
+/// Generate a deterministic ML-KEM dataset in memory.
+///
+/// Records are produced in parallel in fixed-size batches so callers can rely
+/// on library generation without reimplementing the chunked loop themselves.
+pub fn generate_dataset(kem: KemVariant, count: usize, seed: u64) -> io::Result<Dataset> {
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "count must be greater than zero",
+        ));
+    }
+
+    // Each ML-KEM seed is 64 bytes. ChaCha20 words are 4 bytes each, so each
+    // seed occupies 16 words in the stream. set_word_pos lets each worker seek
+    // independently while preserving deterministic sequential output.
+    const SEED_BYTES: usize = 64;
+    const CHACHA_WORD_BYTES: usize = 4;
+    const SEED_WORDS: u128 = (SEED_BYTES / CHACHA_WORD_BYTES) as u128;
+
+    let public_key_len = {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+        let mut sample_seed = [0u8; SEED_BYTES];
+        rng.fill_bytes(&mut sample_seed);
+        kem.generate_public_key(&sample_seed).len()
+    };
+
+    let mut records = Vec::with_capacity(count);
+    let mut seen_ids = HashSet::with_capacity(count);
+
+    for chunk_start in (0..count).step_by(DEFAULT_DATASET_BATCH_SIZE) {
+        let chunk_end = (chunk_start + DEFAULT_DATASET_BATCH_SIZE).min(count);
+        let chunk: Vec<DatasetRecord> = (chunk_start..chunk_end)
+            .into_par_iter()
+            .map(|idx| {
+                let mut rng = ChaCha20Rng::seed_from_u64(seed);
+                rng.set_word_pos(idx as u128 * SEED_WORDS);
+
+                let mut record_seed = [0u8; SEED_BYTES];
+                rng.fill_bytes(&mut record_seed);
+
+                let public_key = kem.generate_public_key(&record_seed);
+                let public_key_id = derive_public_key_id(&public_key, kem.name());
+
+                DatasetRecord {
+                    public_key_id,
+                    public_key,
+                }
+            })
+            .collect();
+
+        for record in chunk {
+            if !seen_ids.insert(record.public_key_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate public key id generated",
+                ));
+            }
+            debug_assert_eq!(record.public_key.len(), public_key_len);
+            records.push(record);
+        }
+    }
+
+    Ok(Dataset {
+        kem_name: kem.name().to_string(),
+        public_key_len,
+        records,
+    })
 }
 
 /// Derive a 32-byte public-key ID.
