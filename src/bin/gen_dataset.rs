@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clap::Parser;
-use ml_kem::Seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
@@ -63,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Derive public key length from a single sample key (no wasted allocation).
     let sample_key = {
         let mut rng = ChaCha20Rng::seed_from_u64(args.seed);
-        let mut seed = Seed::default();
+        let mut seed = [0u8; SEED_BYTES];
         rng.fill_bytes(&mut seed);
         args.kem.generate_public_key(&seed)
     };
@@ -112,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 move |idx| {
                     let mut rng = ChaCha20Rng::seed_from_u64(args.seed);
                     rng.set_word_pos(idx as u128 * SEED_WORDS);
-                    let mut seed = Seed::default();
+                    let mut seed = [0u8; SEED_BYTES];
                     rng.fill_bytes(&mut seed);
 
                     let public_key = args.kem.generate_public_key(&seed);
