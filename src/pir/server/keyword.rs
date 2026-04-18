@@ -6,8 +6,9 @@ use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
 
 use crate::commons::{
-    HandshakeParams, KeywordPirHandshake, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS,
-    deserialize_keyword_query, recv_msg, send_msg, serialize_keyword_response,
+    DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload,
+    MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS, deserialize_keyword_query, recv_msg,
+    send_msg, serialize_keyword_response,
 };
 use crate::dataset::Dataset;
 use crate::gadget::gadget_invert;
@@ -130,13 +131,21 @@ impl<'a> KeywordServer<'a> {
             ));
         }
 
-        let (packing_keys, per_query) =
-            deserialize_keyword_query(self.params, &self.pack_params, query_bytes);
+        let decoded_query = deserialize_keyword_query(self.params, &self.pack_params, query_bytes);
         cuda_packing_online::gpu_expand_and_set_keys(
-            packing_keys.y_body_condensed.as_ref().unwrap(),
-            packing_keys.z_body_condensed.as_ref().unwrap(),
+            decoded_query
+                .packing_keys
+                .y_body_condensed
+                .as_ref()
+                .unwrap(),
+            decoded_query
+                .packing_keys
+                .z_body_condensed
+                .as_ref()
+                .unwrap(),
             self.params,
         );
+        let DecodedKeywordQuery { queries, .. } = decoded_query;
 
         let rgsw_fold_and_switch = |ct_gsw_body: &PolyMatrixNTT<'_>,
                                     packed: &[PolyMatrixRaw<'_>]|
@@ -201,28 +210,30 @@ impl<'a> KeywordServer<'a> {
             )
         };
 
-        let mut all_responses = Vec::with_capacity(per_query.len());
-        if per_query.len() == 2 {
-            let packed_0 = gpu_first_pass(&per_query[0].0);
+        let mut all_responses = Vec::with_capacity(queries.len());
+        if queries.len() == 2 {
+            let packed_0 = gpu_first_pass(&queries[0].packed_query_row);
             let (response_0, packed_1) = rayon::join(
-                || rgsw_fold_and_switch(&per_query[0].1, &packed_0),
-                || gpu_first_pass(&per_query[1].0),
+                || rgsw_fold_and_switch(&queries[0].ct_gsw_body, &packed_0),
+                || gpu_first_pass(&queries[1].packed_query_row),
             );
-            let response_1 = rgsw_fold_and_switch(&per_query[1].1, &packed_1);
+            let response_1 = rgsw_fold_and_switch(&queries[1].ct_gsw_body, &packed_1);
             all_responses.push(response_0);
             all_responses.push(response_1);
         } else {
-            for (packed_query_row, ct_gsw_body) in &per_query {
-                let packed = gpu_first_pass(packed_query_row);
-                let response = rgsw_fold_and_switch(ct_gsw_body, &packed);
+            for query in &queries {
+                let packed = gpu_first_pass(&query.packed_query_row);
+                let response = rgsw_fold_and_switch(&query.ct_gsw_body, &packed);
                 all_responses.push(response);
             }
         }
 
-        let stash_entries = self.table.stash.clone();
-        let empty_sidecar: [(Vec<u8>, Vec<u8>); 0] = [];
-        let response_data =
-            serialize_keyword_response(&all_responses, &stash_entries, &empty_sidecar, 0);
+        let response_data = serialize_keyword_response(&KeywordResponsePayload {
+            responses: all_responses,
+            stash_entries: self.table.stash.clone(),
+            sidecar_entries: vec![],
+            block_number: 0,
+        });
         send_msg(stream, MSG_KEYWORD_RESPONSE, &response_data)
     }
 }

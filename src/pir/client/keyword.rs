@@ -1,5 +1,7 @@
-use crate::aligned_memory::AlignedMemory64;
-use crate::commons::{HandshakeParams, KeywordPirHandshake, RGSW_SEEDS, serialize_keyword_query};
+use crate::commons::{
+    HandshakeParams, KeywordPirHandshake, KeywordQuery, KeywordResponsePayload, RGSW_SEEDS,
+    serialize_keyword_query,
+};
 use crate::gadget::get_bits_per;
 use crate::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
 use crate::modulus_switch::ModulusSwitch;
@@ -115,7 +117,7 @@ impl<'a> KeywordClient<'a> {
         hasher.all_positions(query_id)
     }
 
-    fn build_query_for_index(&self, which_item: usize) -> (AlignedMemory64, PolyMatrixNTT<'a>) {
+    fn build_query_for_index(&self, which_item: usize) -> KeywordQuery<'a> {
         let target_row = which_item / self.per;
         let target_col = (which_item % self.per) * self.item_size_elements;
         let target_sub_col = (target_col % (self.interpolate_degree * self.gamma)) / self.gamma;
@@ -156,7 +158,10 @@ impl<'a> KeywordClient<'a> {
             target_row,
         );
         let packed_query_row = pack_query(self.params, &query_b_values);
-        (packed_query_row, ct_gsw_body)
+        KeywordQuery {
+            packed_query_row,
+            ct_gsw_body,
+        }
     }
 
     pub fn serialize_request(
@@ -164,7 +169,7 @@ impl<'a> KeywordClient<'a> {
         packing_keys: &mut PackingKeys<'a>,
         positions: &[usize],
     ) -> Vec<u8> {
-        let queries: Vec<_> = positions
+        let queries: Vec<KeywordQuery<'a>> = positions
             .iter()
             .map(|&bucket_idx| self.build_query_for_index(bucket_idx))
             .collect();
@@ -209,10 +214,9 @@ impl<'a> KeywordClient<'a> {
         &self,
         query_id: &[u8; PUBLIC_KEY_ID_LEN],
         positions: &[usize],
-        responses: &[Vec<u8>],
-        stash: &[Vec<u8>],
+        response: &KeywordResponsePayload,
     ) -> Option<Vec<u8>> {
-        for (i, response_bytes) in responses.iter().enumerate() {
+        for (i, response_bytes) in response.responses.iter().enumerate() {
             let decrypted = self.decrypt_response_values(response_bytes);
             let bucket_idx = positions[i];
             let target_col = (bucket_idx % self.per) * self.item_size_elements;
@@ -236,7 +240,7 @@ impl<'a> KeywordClient<'a> {
             }
         }
 
-        for entry in stash {
+        for entry in &response.stash_entries {
             if entry.len() >= self.keyword.entry_size && entry[..self.keyword.key_size] == *query_id
             {
                 let public_key = entry

@@ -568,12 +568,37 @@ pub fn read_file_into_matrix(
 // Keyword PIR serialization
 // ============================================================================
 
+#[derive(Clone)]
+pub struct KeywordQuery<'a> {
+    pub packed_query_row: AlignedMemory64,
+    pub ct_gsw_body: PolyMatrixNTT<'a>,
+}
+
+pub struct DecodedKeywordQuery<'a> {
+    pub packing_keys: PackingKeys<'a>,
+    pub queries: Vec<KeywordQuery<'a>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeywordResponseSidecarEntry {
+    pub address: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeywordResponsePayload {
+    pub responses: Vec<Vec<u8>>,
+    pub stash_entries: Vec<Vec<u8>>,
+    pub sidecar_entries: Vec<KeywordResponseSidecarEntry>,
+    pub block_number: u64,
+}
+
 /// Serialize a keyword query: shared packing keys + N per-hash queries.
 /// Format: [u8 num_queries][bit-packed: keys | per-query (query_row + rgsw_body)]
 pub fn serialize_keyword_query(
     params: &Params,
     packing_keys: &mut PackingKeys<'_>,
-    queries: &[(AlignedMemory64, PolyMatrixNTT<'_>)],
+    queries: &[KeywordQuery<'_>],
 ) -> Vec<u8> {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, _crt1_bits) = crt_bits(params);
@@ -622,11 +647,11 @@ pub fn serialize_keyword_query(
     }
 
     // Per-query data
-    for (packed_query_row, ct_gsw_body) in queries {
+    for query in queries {
         bo = write_condensed_values(
             &mut buf,
             bo,
-            packed_query_row.as_slice(),
+            query.packed_query_row.as_slice(),
             crt0_bits,
             total_bits,
         );
@@ -634,7 +659,7 @@ pub fn serialize_keyword_query(
             bo = write_raw_crt_poly(
                 &mut buf,
                 bo,
-                ct_gsw_body.get_poly(0, i),
+                query.ct_gsw_body.get_poly(0, i),
                 params.poly_len,
                 crt0_bits,
                 total_bits,
@@ -652,7 +677,7 @@ pub fn deserialize_keyword_query<'a>(
     params: &'a Params,
     packing_params: &'a PackParams,
     all_u8: Vec<u8>,
-) -> (PackingKeys<'a>, Vec<(AlignedMemory64, PolyMatrixNTT<'a>)>) {
+) -> DecodedKeywordQuery<'a> {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, crt1_bits) = crt_bits(params);
     let total_bits = crt0_bits + crt1_bits;
@@ -725,55 +750,53 @@ pub fn deserialize_keyword_query<'a>(
                 total_bits,
             );
         }
-        queries.push((packed_query_row, ct_gsw_body));
+        queries.push(KeywordQuery {
+            packed_query_row,
+            ct_gsw_body,
+        });
     }
 
-    (packing_keys, queries)
+    DecodedKeywordQuery {
+        packing_keys,
+        queries,
+    }
 }
 
 /// Serialize keyword response: PIR responses + stash + sidecar + block_number.
-pub fn serialize_keyword_response(
-    responses: &[Vec<u8>],
-    stash: &[Vec<u8>],
-    sidecar: &[(Vec<u8>, Vec<u8>)],
-    block_number: u64,
-) -> Vec<u8> {
+pub fn serialize_keyword_response(payload: &KeywordResponsePayload) -> Vec<u8> {
     let mut buf = Vec::new();
 
     // Responses
-    buf.extend_from_slice(&(responses.len() as u32).to_le_bytes());
-    for resp in responses {
+    buf.extend_from_slice(&(payload.responses.len() as u32).to_le_bytes());
+    for resp in &payload.responses {
         buf.extend_from_slice(&(resp.len() as u32).to_le_bytes());
         buf.extend_from_slice(resp);
     }
 
     // Stash entries (each is entry_size bytes)
-    buf.extend_from_slice(&(stash.len() as u32).to_le_bytes());
-    for entry in stash {
+    buf.extend_from_slice(&(payload.stash_entries.len() as u32).to_le_bytes());
+    for entry in &payload.stash_entries {
         buf.extend_from_slice(&(entry.len() as u32).to_le_bytes());
         buf.extend_from_slice(entry);
     }
 
     // Sidecar: (address, value) pairs
-    buf.extend_from_slice(&(sidecar.len() as u32).to_le_bytes());
-    for (addr, value) in sidecar {
-        buf.extend_from_slice(&(addr.len() as u32).to_le_bytes());
-        buf.extend_from_slice(addr);
-        buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        buf.extend_from_slice(value);
+    buf.extend_from_slice(&(payload.sidecar_entries.len() as u32).to_le_bytes());
+    for entry in &payload.sidecar_entries {
+        buf.extend_from_slice(&(entry.address.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&entry.address);
+        buf.extend_from_slice(&(entry.value.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&entry.value);
     }
 
     // Block number
-    buf.extend_from_slice(&block_number.to_le_bytes());
+    buf.extend_from_slice(&payload.block_number.to_le_bytes());
 
     buf
 }
 
 /// Deserialize keyword response.
-/// Returns (responses, stash_entries, sidecar_kv, block_number).
-pub fn deserialize_keyword_response(
-    data: &[u8],
-) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>, u64) {
+pub fn deserialize_keyword_response(data: &[u8]) -> KeywordResponsePayload {
     let mut offset = 0;
 
     let read_u32 = |off: &mut usize| -> u32 {
@@ -807,19 +830,24 @@ pub fn deserialize_keyword_response(
 
     // Sidecar
     let num_sidecar = read_u32(&mut offset) as usize;
-    let mut sidecar = Vec::with_capacity(num_sidecar);
+    let mut sidecar_entries = Vec::with_capacity(num_sidecar);
     for _ in 0..num_sidecar {
         let addr_len = read_u32(&mut offset) as usize;
-        let addr = data[offset..offset + addr_len].to_vec();
+        let address = data[offset..offset + addr_len].to_vec();
         offset += addr_len;
         let val_len = read_u32(&mut offset) as usize;
-        let val = data[offset..offset + val_len].to_vec();
+        let value = data[offset..offset + val_len].to_vec();
         offset += val_len;
-        sidecar.push((addr, val));
+        sidecar_entries.push(KeywordResponseSidecarEntry { address, value });
     }
 
     // Block number
     let block_number = read_u64(&mut offset);
 
-    (responses, stash, sidecar, block_number)
+    KeywordResponsePayload {
+        responses,
+        stash_entries: stash,
+        sidecar_entries,
+        block_number,
+    }
 }

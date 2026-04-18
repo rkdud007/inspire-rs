@@ -131,10 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("expected keyword response, got {}", msg_type).into());
     }
 
-    let (responses, stash, _sidecar, _block_number) = deserialize_keyword_response(&response_data);
-
-    let found_public_key =
-        keyword_client.find_public_key(&query_id, &positions, &responses, &stash);
+    let response = deserialize_keyword_response(&response_data);
+    let found_public_key = keyword_client.find_public_key(&query_id, &positions, &response);
 
     println!("query id: {}", hex::encode(query_id));
     if let Some(public_key) = found_public_key {
