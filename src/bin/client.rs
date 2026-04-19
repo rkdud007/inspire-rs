@@ -8,8 +8,6 @@ use inspire_rs::commons::{
 use inspire_rs::packing::PackingType;
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 
-use inspire_rs::PUBLIC_KEY_ID_LEN;
-
 #[derive(Parser, Debug)]
 #[command(version, about = "Keyword PIR client for ML-KEM-768 public keys")]
 struct Args {
@@ -25,19 +23,17 @@ fn parse_hex(input: &str) -> Result<Vec<u8>, String> {
     hex::decode(input.trim_start_matches("0x")).map_err(|err| err.to_string())
 }
 
-fn resolve_query_id(args: &Args) -> Result<[u8; PUBLIC_KEY_ID_LEN], String> {
+fn resolve_query_id(args: &Args, expected_len: usize) -> Result<Vec<u8>, String> {
     if let Some(id_hex) = &args.id {
         let bytes = parse_hex(id_hex)?;
-        if bytes.len() != PUBLIC_KEY_ID_LEN {
+        if bytes.len() != expected_len {
             return Err(format!(
                 "expected {} bytes for --id, got {}",
-                PUBLIC_KEY_ID_LEN,
+                expected_len,
                 bytes.len()
             ));
         }
-        let mut id = [0u8; PUBLIC_KEY_ID_LEN];
-        id.copy_from_slice(&bytes);
-        return Ok(id);
+        return Ok(bytes);
     }
 
     Err("provide --id".into())
@@ -60,33 +56,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .ok_or("server is not in keyword PIR mode")?;
 
-    // Use kem_name from handshake so ID derivation matches how the dataset was built.
-    let kem_name = if keyword.kem_name.is_empty() {
-        inspire_rs::KEM_ML_KEM_768
-    } else {
-        keyword.kem_name.as_str()
-    };
-    let query_id = resolve_query_id(&args)?;
-
-    if keyword.key_size != PUBLIC_KEY_ID_LEN {
-        return Err(format!(
-            "expected {}-byte keyword ids, server uses {}",
-            PUBLIC_KEY_ID_LEN, keyword.key_size
-        )
-        .into());
-    }
-
     let packing_type = PackingType::InspiRING;
     let keyword_client = KeywordClient::setup_from_public_params(
         &public_params,
-        KeywordClientConfig {
-            kem_name: kem_name.to_string(),
-            packing_type,
-        },
+        KeywordClientConfig { packing_type },
     )?;
+    let query_id = resolve_query_id(&args, keyword.key_size)?;
 
     let t_total = Instant::now();
-    let query = keyword_client.query(&query_id);
+    let query = keyword_client.query(&query_id)?;
     let query_bytes = keyword_client.serialize_query(&query);
     send_msg(&mut stream, MSG_KEYWORD_QUERY, &query_bytes)?;
 
@@ -98,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let found_public_key =
         keyword_client.extract_from_serialized_response(&query_id, &query, &response_data);
 
-    println!("query id: {}", hex::encode(query_id));
+    println!("query id: {}", hex::encode(&query_id));
     if let Some(public_key) = found_public_key {
         println!("public key: {}", hex::encode(public_key));
     } else {

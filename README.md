@@ -25,14 +25,14 @@ save_dataset("keys.bin".as_ref(), &dataset)?;
 
 ```rust
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
-use inspire_rs::pir::server::KeywordServer;
+use inspire_rs::setup_keyword_server;
 
-let server = KeywordServer::setup_from_dataset(&dataset, None, None)?;
+let server = setup_keyword_server(&dataset, None, None)?;
 let public_params = server.public_params();
 
 let client = KeywordClient::setup_from_public_params(&public_params, KeywordClientConfig::default())
     .map_err(std::io::Error::other)?;
-let query = client.query(&query_id);
+let query = client.query(&query_id).map_err(std::io::Error::other)?;
 
 let response = server.respond(query.payload());
 let value = client.extract(

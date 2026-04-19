@@ -1,8 +1,7 @@
 #![cfg(feature = "gpu")]
 
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
-use inspire_rs::pir::server::KeywordServer;
-use inspire_rs::{DatasetGenerator, KemVariant};
+use inspire_rs::{DatasetGenerator, KemVariant, public_key_matches_id, setup_keyword_server};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -19,17 +18,22 @@ fn keyword_pir_roundtrip_mlkem() {
     let target_index = selection_rng.random_range(0..RECORD_COUNT);
     let expected_record = dataset.records[target_index].clone();
 
-    let server = KeywordServer::setup_from_dataset(&dataset, None, None).unwrap();
+    let server = setup_keyword_server(&dataset, None, None).unwrap();
     let public_params = server.public_params();
     let client =
         KeywordClient::setup_from_public_params(&public_params, KeywordClientConfig::default())
             .unwrap();
 
-    let query = client.query(&expected_record.public_key_id);
+    let query = client.query(&expected_record.public_key_id).unwrap();
     let response = server.respond(query.payload());
     let public_key = client
         .extract(&expected_record.public_key_id, &query, &response)
         .expect("query should return the inserted public key");
 
+    assert!(public_key_matches_id(
+        &expected_record.public_key_id,
+        &public_key,
+        &dataset.kem_name
+    ));
     assert_eq!(public_key, expected_record.public_key);
 }

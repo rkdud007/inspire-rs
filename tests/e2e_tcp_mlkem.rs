@@ -12,7 +12,10 @@ use inspire_rs::commons::{
 };
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
-use inspire_rs::{Dataset, DatasetGenerator, KemVariant, load_dataset, save_dataset};
+use inspire_rs::{
+    Dataset, DatasetGenerator, KemVariant, load_dataset, public_key_matches_id, save_dataset,
+    setup_keyword_server,
+};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -90,7 +93,7 @@ fn keyword_pir_roundtrip_tcp_mlkem() {
     let temp_dir = TempDirGuard::new();
     let (query_id, expected_public_key, dataset) = make_dataset(temp_dir.path());
 
-    let server = KeywordServer::setup_from_dataset(&dataset, None, None).unwrap();
+    let server = setup_keyword_server(&dataset, None, None).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server_thread = spawn_keyword_server(server, listener);
@@ -103,7 +106,7 @@ fn keyword_pir_roundtrip_tcp_mlkem() {
     let client =
         KeywordClient::setup_from_public_params(&public_params, KeywordClientConfig::default())
             .unwrap();
-    let query = client.query(&query_id);
+    let query = client.query(&query_id).unwrap();
     let query_bytes = client.serialize_query(&query);
     send_msg(&mut stream, MSG_KEYWORD_QUERY, &query_bytes).unwrap();
 
@@ -113,6 +116,11 @@ fn keyword_pir_roundtrip_tcp_mlkem() {
     let public_key = client
         .extract_from_serialized_response(&query_id, &query, &response_bytes)
         .expect("query should return the inserted public key");
+    assert!(public_key_matches_id(
+        &query_id,
+        &public_key,
+        &dataset.kem_name
+    ));
     assert_eq!(public_key, expected_public_key);
 
     server_thread

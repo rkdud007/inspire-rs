@@ -8,8 +8,7 @@ use clap::Parser;
 use inspire_rs::commons::{
     MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
 };
-use inspire_rs::load_dataset;
-use inspire_rs::pir::server::KeywordServer;
+use inspire_rs::{load_dataset, setup_keyword_server};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -59,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.public_key_len
     ));
     log("initializing keyword PIR runtime");
-    let keyword_server = KeywordServer::setup_from_dataset(&dataset, args.buckets, args.dim0)?;
+    let keyword_server = setup_keyword_server(&dataset, args.buckets, args.dim0)?;
     log("keyword PIR runtime ready");
     let public_params = keyword_server.public_params();
     let handshake_json = serde_json::to_vec(&public_params)?;

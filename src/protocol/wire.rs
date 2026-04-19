@@ -13,22 +13,17 @@ use std::time::Duration;
 
 // Wire protocol message types
 pub const MSG_HANDSHAKE: u8 = 0x01;
-pub const MSG_QUERY: u8 = 0x02;
-pub const MSG_RESPONSE: u8 = 0x03;
-pub const MSG_SIDECAR: u8 = 0x04;
 pub const MSG_KEYWORD_QUERY: u8 = 0x05;
 pub const MSG_KEYWORD_RESPONSE: u8 = 0x06;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct KeywordPirHandshake {
     pub cuckoo_seed: Vec<u8>, // 16 bytes
-    pub num_hashes: usize,    // 2
-    pub key_size: usize,      // 20
-    pub value_size: usize,    // 40
-    pub entry_size: usize,    // 64 (padded)
-    pub num_accounts: usize,  // pre-expansion count
-    #[serde(default)]
-    pub kem_name: String,
+    pub num_hashes: usize,
+    pub key_size: usize,
+    pub value_size: usize,
+    pub entry_size: usize,
+    pub num_records: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -388,52 +383,6 @@ pub fn deserialize_everything<'a>(
     (packing_keys, packed_query_row, ct_gsw_body_raw)
 }
 
-/// Serialize sidecar entries for wire transmission.
-/// Format: [u32 num_entries] [per entry: u64 index, u32 num_values, values as u16 LE...]
-pub fn serialize_sidecar(entries: &[(usize, Vec<u16>)]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-    for (index, values) in entries {
-        buf.extend_from_slice(&(*index as u64).to_le_bytes());
-        buf.extend_from_slice(&(values.len() as u32).to_le_bytes());
-        for &v in values {
-            buf.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    buf
-}
-
-/// Deserialize sidecar entries from wire format.
-pub fn deserialize_sidecar(data: &[u8]) -> Vec<(usize, Vec<u16>)> {
-    let mut entries = Vec::new();
-    if data.len() < 4 {
-        return entries;
-    }
-    let num_entries = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let mut offset = 4;
-    for _ in 0..num_entries {
-        if offset + 12 > data.len() {
-            break;
-        }
-        let index = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-        offset += 8;
-        let num_values = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-        let mut values = Vec::with_capacity(num_values);
-        for _ in 0..num_values {
-            if offset + 2 > data.len() {
-                break;
-            }
-            values.push(u16::from_le_bytes(
-                data[offset..offset + 2].try_into().unwrap(),
-            ));
-            offset += 2;
-        }
-        entries.push((index, values));
-    }
-    entries
-}
-
 fn max_interpolate_degree(
     modulus: f64,
     d0: f64,
@@ -582,18 +531,10 @@ pub struct KeywordQueryPayload {
     pub queries: Vec<KeywordQuery>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeywordResponseSidecarEntry {
-    pub address: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeywordResponsePayload {
     pub responses: Vec<Vec<u8>>,
     pub stash_entries: Vec<Vec<u8>>,
-    pub sidecar_entries: Vec<KeywordResponseSidecarEntry>,
-    pub block_number: u64,
 }
 
 /// Serialize a keyword query: shared packing keys + N per-hash queries.
@@ -763,7 +704,7 @@ pub fn deserialize_keyword_query<'a>(
     }
 }
 
-/// Serialize keyword response: PIR responses + stash + sidecar + block_number.
+/// Serialize keyword response: PIR responses + stash entries.
 pub fn serialize_keyword_response(payload: &KeywordResponsePayload) -> Vec<u8> {
     let mut buf = Vec::new();
 
@@ -781,18 +722,6 @@ pub fn serialize_keyword_response(payload: &KeywordResponsePayload) -> Vec<u8> {
         buf.extend_from_slice(entry);
     }
 
-    // Sidecar: (address, value) pairs
-    buf.extend_from_slice(&(payload.sidecar_entries.len() as u32).to_le_bytes());
-    for entry in &payload.sidecar_entries {
-        buf.extend_from_slice(&(entry.address.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&entry.address);
-        buf.extend_from_slice(&(entry.value.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&entry.value);
-    }
-
-    // Block number
-    buf.extend_from_slice(&payload.block_number.to_le_bytes());
-
     buf
 }
 
@@ -805,12 +734,6 @@ pub fn deserialize_keyword_response(data: &[u8]) -> KeywordResponsePayload {
         *off += 4;
         v
     };
-    let read_u64 = |off: &mut usize| -> u64 {
-        let v = u64::from_le_bytes(data[*off..*off + 8].try_into().unwrap());
-        *off += 8;
-        v
-    };
-
     // Responses
     let num_responses = read_u32(&mut offset) as usize;
     let mut responses = Vec::with_capacity(num_responses);
@@ -829,26 +752,8 @@ pub fn deserialize_keyword_response(data: &[u8]) -> KeywordResponsePayload {
         offset += len;
     }
 
-    // Sidecar
-    let num_sidecar = read_u32(&mut offset) as usize;
-    let mut sidecar_entries = Vec::with_capacity(num_sidecar);
-    for _ in 0..num_sidecar {
-        let addr_len = read_u32(&mut offset) as usize;
-        let address = data[offset..offset + addr_len].to_vec();
-        offset += addr_len;
-        let val_len = read_u32(&mut offset) as usize;
-        let value = data[offset..offset + val_len].to_vec();
-        offset += val_len;
-        sidecar_entries.push(KeywordResponseSidecarEntry { address, value });
-    }
-
-    // Block number
-    let block_number = read_u64(&mut offset);
-
     KeywordResponsePayload {
         responses,
         stash_entries: stash,
-        sidecar_entries,
-        block_number,
     }
 }

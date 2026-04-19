@@ -5,14 +5,12 @@ use std::collections::HashMap;
 use std::io;
 use std::marker::PhantomData;
 
-use crate::PUBLIC_KEY_ID_LEN;
 use crate::aligned_memory::AlignedMemory64;
 use crate::commons::{
     KeywordPirHandshake, KeywordQueryPayload, KeywordResponsePayload, PublicParams, RGSW_SEEDS,
     deserialize_keyword_query, params_rgswpir_given_input_size_and_dim0,
     serialize_keyword_response,
 };
-use crate::dataset::Dataset;
 use crate::gadget::gadget_invert;
 use crate::gpu::encode as cuda_encode;
 use crate::gpu::gemv as cuda_gemv;
@@ -21,6 +19,7 @@ use crate::kv::cuckoo::{CuckooParams, CuckooTable, DETERMINISTIC_SEED};
 use crate::modulus_switch::ModulusSwitch;
 use crate::number_theory::invert_uint_mod;
 use crate::packing::{PackParams, PackingType, PrecompInsPIR};
+use crate::pir::keyword::{KeywordRecord, KeywordServerConfig};
 use crate::pir::measurement::Measurement;
 use crate::pir::params::GetQPrime;
 use crate::pir::scheme::ProtocolType;
@@ -31,18 +30,17 @@ pub fn default_bucket_count(record_count: usize) -> usize {
     (record_count.max(512) * 2).next_power_of_two()
 }
 
-pub fn build_cuckoo_table(dataset: &Dataset, num_items: usize) -> CuckooTable {
-    let params = CuckooParams::new(
-        num_items,
-        crate::PUBLIC_KEY_ID_LEN,
-        dataset.public_key_len,
-        0,
-        DETERMINISTIC_SEED,
-    );
+pub fn build_cuckoo_table(
+    records: &[KeywordRecord],
+    num_items: usize,
+    key_size: usize,
+    value_size: usize,
+) -> CuckooTable {
+    let params = CuckooParams::new(num_items, key_size, value_size, 0, DETERMINISTIC_SEED);
     let mut table = CuckooTable::new(params);
 
-    for record in &dataset.records {
-        table.insert(&record.public_key_id, &record.public_key);
+    for record in records {
+        table.insert(&record.key, &record.value);
     }
 
     table
@@ -55,7 +53,6 @@ pub struct KeywordServer<T: Sync> {
     num_items: usize,
     entry_size: usize,
     dim0: usize,
-    kem_name: String,
     db_rows: usize,
     db_cols: usize,
     gamma: usize,
@@ -66,31 +63,66 @@ pub struct KeywordServer<T: Sync> {
 }
 
 impl KeywordServer<u16> {
-    pub fn setup_from_dataset(
-        dataset: &Dataset,
-        buckets: Option<usize>,
-        dim0: Option<usize>,
-    ) -> io::Result<Self> {
-        if dataset.records.is_empty() {
+    pub fn setup(records: &[KeywordRecord], config: KeywordServerConfig) -> io::Result<Self> {
+        if records.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "dataset must contain at least one record",
+                "keyword record set must contain at least one record",
+            ));
+        }
+        if config.key_size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "keyword key size must be non-zero",
+            ));
+        }
+        if config.value_size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "keyword value size must be non-zero",
             ));
         }
 
-        let num_items = buckets.unwrap_or_else(|| default_bucket_count(dataset.records.len()));
-        if num_items < dataset.records.len() {
+        for (idx, record) in records.iter().enumerate() {
+            if record.key.len() != config.key_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "record {} key has {} bytes, expected {}",
+                        idx,
+                        record.key.len(),
+                        config.key_size
+                    ),
+                ));
+            }
+            if record.value.len() != config.value_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "record {} value has {} bytes, expected {}",
+                        idx,
+                        record.value.len(),
+                        config.value_size
+                    ),
+                ));
+            }
+        }
+
+        let num_items = config
+            .buckets
+            .unwrap_or_else(|| default_bucket_count(records.len()));
+        if num_items < records.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "bucket count {} must be >= record count {}",
                     num_items,
-                    dataset.records.len()
+                    records.len()
                 ),
             ));
         }
 
-        let entry_size = PUBLIC_KEY_ID_LEN + dataset.public_key_len;
+        let entry_size = config.key_size + config.value_size;
         let item_size_bits = entry_size * 8;
         if item_size_bits % 16 != 0 {
             return Err(io::Error::new(
@@ -101,7 +133,7 @@ impl KeywordServer<u16> {
 
         cuda_encode::init_memory_pool();
 
-        let dim0 = dim0.unwrap_or_else(|| {
+        let dim0 = config.dim0.unwrap_or_else(|| {
             let default_dim0 = if num_items >= 256_000_000 {
                 32768
             } else {
@@ -126,7 +158,7 @@ impl KeywordServer<u16> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "bucket count {} is too small for the PIR scheme (needs at least {}); regenerate the dataset with at least {} records, or pass --buckets {}",
+                    "bucket count {} is too small for the PIR scheme (needs at least {}); use at least {} records, or pass --buckets {}",
                     num_items, db_rows, min_records, db_rows
                 ),
             ));
@@ -134,7 +166,7 @@ impl KeywordServer<u16> {
 
         let per = num_items / db_rows;
         let item_size_elements = item_size_bits / 16;
-        let table = build_cuckoo_table(dataset, num_items);
+        let table = build_cuckoo_table(records, num_items, config.key_size, config.value_size);
         let raw_db = table.to_raw_db(db_rows, db_cols, per, item_size_elements);
 
         let num_inv = invert_uint_mod(interpolate_degree as u64, pt_modulus).unwrap();
@@ -197,7 +229,6 @@ impl KeywordServer<u16> {
             num_items,
             entry_size,
             dim0,
-            dataset.kem_name.clone(),
             interpolate_degree,
         ))
     }
@@ -211,7 +242,6 @@ impl<T: Sync> KeywordServer<T> {
         num_items: usize,
         entry_size: usize,
         dim0: usize,
-        kem_name: String,
         interpolate_degree: usize,
     ) -> Self {
         let params = y_server.params.as_ref();
@@ -230,7 +260,6 @@ impl<T: Sync> KeywordServer<T> {
             num_items,
             entry_size,
             dim0,
-            kem_name,
             db_rows,
             db_cols,
             gamma,
@@ -246,7 +275,7 @@ impl<T: Sync> KeywordServer<T> {
     }
 
     pub fn public_params(&self) -> PublicParams {
-        let num_accounts = self
+        let num_records = self
             .table
             .occupied
             .iter()
@@ -263,8 +292,7 @@ impl<T: Sync> KeywordServer<T> {
                 key_size: self.table.params.key_size,
                 value_size: self.table.params.value_size,
                 entry_size: self.table.params.entry_size(),
-                num_accounts,
-                kem_name: self.kem_name.clone(),
+                num_records,
             }),
         }
     }
@@ -362,8 +390,6 @@ impl<T: Sync> KeywordServer<T> {
         KeywordResponsePayload {
             responses: all_responses,
             stash_entries: self.table.stash.clone(),
-            sidecar_entries: vec![],
-            block_number: 0,
         }
     }
 

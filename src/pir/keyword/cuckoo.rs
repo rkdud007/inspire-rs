@@ -1,44 +1,7 @@
 use rand::RngExt;
 use rayon::prelude::*;
-use sha3::{
-    Shake256,
-    digest::{ExtendableOutput, Update, XofReader},
-};
 use siphasher::sip::SipHasher;
-use std::fs::File;
 use std::hash::Hasher;
-use std::io::{self, BufRead, BufReader};
-use std::path::Path;
-use std::time::Instant;
-
-/// Max entry size for stack-allocated entries (key 20 + value 40 + padding 4 = 64)
-const MAX_ENTRY_SIZE: usize = 64;
-
-/// Deterministic address from index: SHAKE-256(i as u64 LE) → first 20 bytes.
-pub fn address_from_index(i: usize) -> Vec<u8> {
-    let mut hasher = Shake256::default();
-    hasher.update(&(i as u64).to_le_bytes());
-    let mut reader = hasher.finalize_xof();
-    let mut buf = vec![0u8; 20];
-    XofReader::read(&mut reader, &mut buf);
-    buf
-}
-
-/// Trivial address: index encoded as 20-byte big-endian (for identity hash testing).
-pub fn trivial_address_from_index(i: usize) -> Vec<u8> {
-    let mut buf = vec![0u8; 20];
-    buf[12..20].copy_from_slice(&(i as u64).to_be_bytes());
-    buf
-}
-
-/// Initial value for account i: 32B balance = i as u128 BE padded, 8B nonce = 0.
-pub fn initial_value(i: usize) -> Vec<u8> {
-    let mut value = vec![0u8; 40];
-    let balance_bytes = (i as u128).to_be_bytes(); // 16 bytes
-    value[16..32].copy_from_slice(&balance_bytes);
-    // nonce = 0 (already zeroed)
-    value
-}
 
 /// Convert 64 bytes to 32 u16 big-endian elements.
 pub fn bytes_to_u16_be(bytes: &[u8]) -> Vec<u16> {
@@ -57,27 +20,6 @@ pub fn u16_be_to_bytes(values: &[u16]) -> Vec<u8> {
         bytes.push(v as u8);
     }
     bytes
-}
-
-// ============================================================================
-// Canary entry for freshness verification
-// ============================================================================
-
-/// Canary address: "InspirePIR" encoded in the last 10 bytes.
-pub const CANARY_ADDRESS: [u8; 20] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49, 0x6e, 0x73, 0x70, 0x69, 0x72,
-    0x65, 0x50, 0x49, 0x52,
-];
-
-/// Nonzero padding marks canary entries (real entries always have zero padding).
-pub const CANARY_PADDING: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBE];
-
-/// Build a canary value: balance = block_number, nonce = block_number.
-pub fn canary_value(block_number: u64) -> Vec<u8> {
-    let mut value = vec![0u8; 40];
-    value[16..32].copy_from_slice(&(block_number as u128).to_be_bytes());
-    value[32..40].copy_from_slice(&block_number.to_be_bytes());
-    value
 }
 
 // ============================================================================
@@ -366,304 +308,6 @@ impl CuckooTable {
         None
     }
 
-    /// Bulk-build cuckoo table from deterministic accounts, with parallel address generation.
-    pub fn build_accounts_parallel(&mut self, num_accounts: usize) {
-        self.build_accounts_parallel_with(num_accounts, false);
-    }
-
-    /// Build entry directly into a stack buffer. Returns entry size.
-    #[inline]
-    fn make_entry_inline(buf: &mut [u8; MAX_ENTRY_SIZE], i: usize, ks: usize, trivial: bool) {
-        // Zero the buffer
-        *buf = [0u8; MAX_ENTRY_SIZE];
-        // Write key (20 bytes)
-        if trivial {
-            buf[12..20].copy_from_slice(&(i as u64).to_be_bytes());
-        } else {
-            let mut hasher = Shake256::default();
-            hasher.update(&(i as u64).to_le_bytes());
-            let mut reader = hasher.finalize_xof();
-            XofReader::read(&mut reader, &mut buf[..ks]);
-        }
-        // Write value: balance = i as u128 BE at bytes [ks+16..ks+32], nonce = 0
-        let balance = (i as u128).to_be_bytes();
-        buf[ks + 16..ks + 32].copy_from_slice(&balance);
-        // padding stays zero
-    }
-
-    /// Fast bulk insert: no heap allocation in the hot path.
-    #[inline]
-    fn insert_fast(&mut self, entry: &[u8; MAX_ENTRY_SIZE], rng: &mut fastrand::Rng) {
-        let ks = self.params.key_size;
-        let es = self.params.entry_size();
-
-        // Try each hash position for an empty bucket
-        let positions = self.hasher.positions_2(&entry[..ks]);
-        for &pos in &positions {
-            if !self.occupied[pos] {
-                self.bucket_slice_mut(pos)[..es].copy_from_slice(&entry[..es]);
-                self.occupied[pos] = true;
-                return;
-            }
-        }
-
-        // All positions occupied — evict
-        let mut current = *entry;
-        for _ in 0..self.params.max_evictions {
-            let hash_idx = (rng.u8(..)) % self.params.num_hashes as u8;
-            let pos = self.hasher.hash(hash_idx, &current[..ks]);
-
-            // Swap: read evicted into current, write current to bucket
-            let slot = self.bucket_slice_mut(pos);
-            let mut evicted = [0u8; MAX_ENTRY_SIZE];
-            evicted[..es].copy_from_slice(&slot[..es]);
-            slot[..es].copy_from_slice(&current[..es]);
-            self.occupied[pos] = true;
-            current = evicted;
-
-            // Try to place evicted entry
-            let positions = self.hasher.positions_2(&current[..ks]);
-            for &p in &positions {
-                if !self.occupied[p] {
-                    self.bucket_slice_mut(p)[..es].copy_from_slice(&current[..es]);
-                    self.occupied[p] = true;
-                    return;
-                }
-            }
-        }
-
-        // Stash overflow
-        self.stash.push(current[..es].to_vec());
-    }
-
-    pub fn build_accounts_parallel_with(&mut self, num_accounts: usize, trivial: bool) {
-        let ks = self.params.key_size;
-        let t0 = Instant::now();
-        let mut rng = fastrand::Rng::new();
-
-        // Generate all entries in parallel (flat buffer, no Vec<Vec>)
-        let entries_per_chunk = 4_000_000;
-        let num_chunks = (num_accounts + entries_per_chunk - 1) / entries_per_chunk;
-
-        let mut last_pct_bucket: u32 = 0;
-        for chunk_idx in 0..num_chunks {
-            let start = chunk_idx * entries_per_chunk;
-            let end = (start + entries_per_chunk).min(num_accounts);
-            let count = end - start;
-
-            let mut flat_entries = vec![[0u8; MAX_ENTRY_SIZE]; count];
-            flat_entries
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(j, buf)| {
-                    Self::make_entry_inline(buf, start + j, ks, trivial);
-                });
-
-            for entry in &flat_entries {
-                self.insert_fast(entry, &mut rng);
-            }
-
-            let pct = end as f64 / num_accounts as f64 * 100.0;
-            let pct_bucket = (pct / 10.0) as u32;
-            if pct_bucket > last_pct_bucket || chunk_idx == num_chunks - 1 {
-                last_pct_bucket = pct_bucket;
-                let elapsed = t0.elapsed().as_secs_f64();
-                let rate = end as f64 / elapsed;
-                let eta = (num_accounts - end) as f64 / rate;
-                eprint!(
-                    "\r  Inserting accounts... {:.0}% ({:.0}s remaining)    ",
-                    pct, eta
-                );
-            }
-        }
-        eprintln!("\r  Inserting accounts... done.                      ");
-    }
-
-    /// Upsert an entry and set nonzero padding bytes (for canary entries).
-    pub fn upsert_canary(
-        &mut self,
-        key: &[u8],
-        value: &[u8],
-        padding: &[u8],
-    ) -> Vec<(usize, Vec<u8>)> {
-        let ks = self.params.key_size;
-        let vs = self.params.value_size;
-        let ps = self.params.padding_size;
-        let mut modified = self.upsert(key, value);
-
-        // Find the canary's bucket and write padding
-        let positions = self.hasher.positions_2(key);
-        for &pos in &positions {
-            if self.occupied[pos] && &self.bucket_slice(pos)[..ks] == key {
-                let pad_start = ks + vs;
-                self.bucket_slice_mut(pos)[pad_start..pad_start + ps]
-                    .copy_from_slice(&padding[..ps]);
-                // Fix returned entry to include the padding
-                for (idx, entry) in &mut modified {
-                    if *idx == pos {
-                        entry[pad_start..pad_start + ps].copy_from_slice(&padding[..ps]);
-                    }
-                }
-                break;
-            }
-        }
-        modified
-    }
-
-    // ========================================================================
-    // CSV loading (HuggingFace eth snapshot format)
-    // ========================================================================
-
-    /// Build cuckoo table from a HuggingFace-format CSV.
-    /// Supports both column orders:
-    ///   - `address,nonce,balance_wei`
-    ///   - `balance_wei,address,nonce`
-    /// First line should contain `block=NUMBER` metadata.
-    /// Returns (block_number, num_accounts_inserted).
-    pub fn build_from_csv(&mut self, path: &Path) -> io::Result<(u64, usize)> {
-        let reader = BufReader::with_capacity(64 * 1024 * 1024, File::open(path)?);
-        let ks = self.params.key_size;
-        let t0 = Instant::now();
-        let mut rng = fastrand::Rng::new();
-        let mut block_number = 0u64;
-        let mut num_accounts = 0usize;
-
-        // Column indices (detected from header)
-        let mut col_addr: usize = 0;
-        let mut col_nonce: usize = 1;
-        let mut col_balance: usize = 2;
-        let mut header_parsed = false;
-
-        for line_result in reader.lines() {
-            let line = line_result?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Extract block number from metadata line
-            if let Some(pos) = trimmed.find("block=") {
-                let after = &trimmed[pos + 6..];
-                let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(n) = num_str.parse::<u64>() {
-                    block_number = n;
-                }
-                continue;
-            }
-
-            // Detect column order from header line
-            if !header_parsed && (trimmed.contains("balance") || trimmed.contains("address")) {
-                let cols: Vec<&str> = trimmed.split(',').collect();
-                for (i, col) in cols.iter().enumerate() {
-                    let c = col.trim().to_lowercase();
-                    if c == "address" {
-                        col_addr = i;
-                    } else if c == "nonce" {
-                        col_nonce = i;
-                    } else if c.contains("balance") {
-                        col_balance = i;
-                    }
-                }
-                header_parsed = true;
-                continue;
-            }
-
-            // Parse data line
-            let parts: Vec<&str> = trimmed.split(',').collect();
-            let max_col = *[col_addr, col_nonce, col_balance].iter().max().unwrap();
-            if parts.len() <= max_col {
-                continue;
-            }
-
-            let address_str = parts[col_addr].trim();
-            let nonce_str = parts[col_nonce].trim();
-            let balance_str = parts[col_balance].trim();
-
-            // Parse address → 20 bytes
-            let addr_hex = address_str.strip_prefix("0x").unwrap_or(address_str);
-            if addr_hex.len() != 40 {
-                continue;
-            }
-            let address = match hex::decode(addr_hex) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-
-            // Parse balance → u128 → 16 bytes BE
-            let balance: u128 = balance_str.parse().unwrap_or(0);
-            let balance_bytes = balance.to_be_bytes();
-
-            // Parse nonce → u64
-            let nonce: u64 = nonce_str.parse().unwrap_or(0);
-
-            // Build entry: [20B address][16B zero][16B balance BE][8B nonce BE][4B pad]
-            let mut entry = [0u8; MAX_ENTRY_SIZE];
-            entry[..ks].copy_from_slice(&address);
-            entry[ks + 16..ks + 32].copy_from_slice(&balance_bytes);
-            entry[ks + 32..ks + 40].copy_from_slice(&nonce.to_be_bytes());
-
-            self.insert_fast(&entry, &mut rng);
-            num_accounts += 1;
-
-            if num_accounts % 4_000_000 == 0 {
-                let elapsed = t0.elapsed().as_secs_f64();
-                let rate = num_accounts as f64 / elapsed;
-                eprint!(
-                    "\r  Loading CSV... {}M accounts ({:.0}k/s)    ",
-                    num_accounts / 1_000_000,
-                    rate / 1000.0
-                );
-            }
-        }
-
-        eprintln!(
-            "\r  CSV loaded: {} accounts from block #{} ({:.1}s)              ",
-            num_accounts,
-            block_number,
-            t0.elapsed().as_secs_f64()
-        );
-
-        Ok((block_number, num_accounts))
-    }
-
-    /// Export all occupied entries to CSV format: `address,nonce,balance_wei`.
-    /// First line is `# block=BLOCK_NUMBER`, second line is the header.
-    pub fn export_csv(&self, path: &Path, block_number: u64) -> io::Result<usize> {
-        use std::io::Write;
-        let ks = self.params.key_size;
-        let mut writer = std::io::BufWriter::with_capacity(64 * 1024 * 1024, File::create(path)?);
-        writeln!(writer, "# block={}", block_number)?;
-        writeln!(writer, "address,nonce,balance_wei")?;
-
-        let t0 = Instant::now();
-        let mut count = 0usize;
-        for i in 0..self.params.num_buckets {
-            if !self.occupied[i] {
-                continue;
-            }
-            let entry = self.bucket_slice(i);
-            let address = &entry[..ks];
-            // value: [16B zero-pad][16B balance BE][8B nonce BE]
-            let balance_bytes = &entry[ks + 16..ks + 32];
-            let nonce_bytes = &entry[ks + 32..ks + 40];
-            let balance = u128::from_be_bytes(balance_bytes.try_into().unwrap());
-            let nonce = u64::from_be_bytes(nonce_bytes.try_into().unwrap());
-            writeln!(writer, "0x{},{},{}", hex::encode(address), nonce, balance)?;
-            count += 1;
-            if count % 4_000_000 == 0 {
-                eprint!("\r  Exporting CSV... {}M accounts    ", count / 1_000_000);
-            }
-        }
-        writer.flush()?;
-        eprintln!(
-            "\r  CSV exported: {} accounts at block #{} ({:.1}s)              ",
-            count,
-            block_number,
-            t0.elapsed().as_secs_f64()
-        );
-        Ok(count)
-    }
-
     /// Convert cuckoo table to column-major raw_db Vec<u16> (parallel).
     /// Iterates by item-within-row (outer, parallel) × row (inner), so each
     /// task writes to item_size_elements consecutive columns (~2MB, fits L2).
@@ -753,15 +397,20 @@ impl CuckooTable {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_address_from_index_deterministic() {
-        let a1 = address_from_index(0);
-        let a2 = address_from_index(0);
-        assert_eq!(a1, a2);
-        assert_eq!(a1.len(), 20);
+    fn key_from_index(i: usize, key_size: usize) -> Vec<u8> {
+        let mut key = vec![0u8; key_size];
+        let idx = i.to_be_bytes();
+        let start = key_size.saturating_sub(idx.len());
+        key[start..start + idx.len()].copy_from_slice(&idx);
+        key
+    }
 
-        let a3 = address_from_index(1);
-        assert_ne!(a1, a3);
+    fn value_from_index(i: usize, value_size: usize) -> Vec<u8> {
+        let mut value = vec![0u8; value_size];
+        let idx = (i as u128).to_be_bytes();
+        let copy_len = idx.len().min(value_size);
+        value[value_size - copy_len..].copy_from_slice(&idx[idx.len() - copy_len..]);
+        value
     }
 
     #[test]
@@ -778,8 +427,8 @@ mod tests {
         let params = CuckooParams::new(200, 20, 40, 4, DETERMINISTIC_SEED);
         let mut table = CuckooTable::new(params);
 
-        let key = address_from_index(0);
-        let value = initial_value(0);
+        let key = key_from_index(0, 20);
+        let value = value_from_index(0, 40);
         table.insert(&key, &value);
 
         let result = table.lookup(&key);
@@ -794,8 +443,8 @@ mod tests {
 
         let mut keys = Vec::new();
         for i in 0..n {
-            let key = address_from_index(i);
-            let value = initial_value(i);
+            let key = key_from_index(i, 20);
+            let value = value_from_index(i, 40);
             table.insert(&key, &value);
             keys.push(key);
         }
@@ -803,7 +452,7 @@ mod tests {
         // Verify all lookups
         for (i, key) in keys.iter().enumerate() {
             let val = table.lookup(key).expect(&format!("key {} not found", i));
-            let expected = initial_value(i);
+            let expected = value_from_index(i, 40);
             assert_eq!(val, expected.as_slice(), "mismatch at index {}", i);
         }
 
@@ -819,8 +468,8 @@ mod tests {
         let params = CuckooParams::new(200, 20, 40, 4, DETERMINISTIC_SEED);
         let mut table = CuckooTable::new(params);
 
-        let key = address_from_index(0);
-        let value1 = initial_value(0);
+        let key = key_from_index(0, 20);
+        let value1 = value_from_index(0, 40);
         table.insert(&key, &value1);
         assert_eq!(table.lookup(&key), Some(value1.as_slice()));
 
@@ -835,8 +484,8 @@ mod tests {
         let params = CuckooParams::new(200, 20, 40, 4, DETERMINISTIC_SEED);
         let mut table = CuckooTable::new(params);
 
-        let key = address_from_index(0);
-        let value = initial_value(0);
+        let key = key_from_index(0, 20);
+        let value = value_from_index(0, 40);
         table.insert(&key, &value);
         assert!(table.lookup(&key).is_some());
 
@@ -852,8 +501,8 @@ mod tests {
         let mut table = CuckooTable::new(params);
 
         for i in 0..n {
-            let key = address_from_index(i);
-            let value = initial_value(i);
+            let key = key_from_index(i, 20);
+            let value = value_from_index(i, 40);
             table.insert(&key, &value);
         }
         let item_size_elements = 64 / 2; // 32 u16 per entry
@@ -866,7 +515,7 @@ mod tests {
         assert_eq!(raw_db.len(), db_rows * db_cols);
 
         // Verify a known entry can be found
-        let key0 = address_from_index(0);
+        let key0 = key_from_index(0, 20);
         let positions = table.hasher.all_positions(&key0);
         let ks = table.params.key_size;
         let mut found = false;
@@ -886,41 +535,5 @@ mod tests {
             }
         }
         assert!(found, "key0 not found in raw_db");
-    }
-
-    #[test]
-    fn test_build_from_csv() {
-        // Create a small test CSV (address,nonce,balance_wei format)
-        let dir = std::env::temp_dir();
-        let csv_path = dir.join("test_accounts.csv");
-        {
-            let mut f = File::create(&csv_path).unwrap();
-            use std::io::Write;
-            writeln!(f, "# block=24644657").unwrap();
-            writeln!(f, "address,nonce,balance_wei").unwrap();
-            writeln!(
-                f,
-                "0x00000000219ab540356cbb839cbe05303d7705fa,5,1000000000000000000"
-            )
-            .unwrap();
-            writeln!(f, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2,0,0").unwrap();
-        }
-
-        let params = CuckooParams::new(100, 20, 40, 4, DETERMINISTIC_SEED);
-        let mut table = CuckooTable::new(params);
-        let (block, n) = table.build_from_csv(&csv_path).unwrap();
-
-        assert_eq!(block, 24644657);
-        assert_eq!(n, 2);
-
-        // Verify first address is present
-        let addr = hex::decode("00000000219ab540356cbb839cbe05303d7705fa").unwrap();
-        let val = table.lookup(&addr).expect("address not found");
-        // Balance 1e18 = 0xDE0B6B3A7640000 → 16 bytes BE
-        // val[16..32] = balance, val[32..40] = nonce=5
-        let nonce = u64::from_be_bytes(val[32..40].try_into().unwrap());
-        assert_eq!(nonce, 5);
-
-        std::fs::remove_file(&csv_path).ok();
     }
 }

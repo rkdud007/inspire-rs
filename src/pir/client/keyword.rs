@@ -1,6 +1,6 @@
 use crate::commons::{
-    KeywordPirHandshake, KeywordQuery, KeywordQueryPayload, PublicParams,
-    KeywordResponsePayload, RGSW_SEEDS, deserialize_keyword_response, serialize_keyword_query,
+    KeywordPirHandshake, KeywordQuery, KeywordQueryPayload, KeywordResponsePayload, PublicParams,
+    RGSW_SEEDS, deserialize_keyword_response, serialize_keyword_query,
 };
 use crate::gadget::get_bits_per;
 use crate::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
@@ -10,20 +10,17 @@ use crate::pir::client::{Client, YClient, decrypt_ct_reg_measured, pack_query};
 use crate::pir::params::GetQPrime;
 use crate::pir::scheme::{V_SEED, W_SEED};
 use crate::poly::{PolyMatrix, PolyMatrixNTT, PolyMatrixRaw};
-use crate::{KEM_ML_KEM_768, PUBLIC_KEY_ID_LEN, derive_public_key_id};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 #[derive(Clone)]
 pub struct KeywordClientConfig {
-    pub kem_name: String,
     pub packing_type: PackingType,
 }
 
 impl Default for KeywordClientConfig {
     fn default() -> Self {
         Self {
-            kem_name: KEM_ML_KEM_768.to_string(),
             packing_type: PackingType::InspiRING,
         }
     }
@@ -48,7 +45,6 @@ impl KeywordClientQuery {
 pub struct KeywordClient {
     y_client: YClient,
     keyword: KeywordPirHandshake,
-    kem_name: String,
     packing_type: PackingType,
     num_items: usize,
     interpolate_degree: usize,
@@ -69,18 +65,25 @@ impl KeywordClient {
             .keyword_pir
             .clone()
             .ok_or_else(|| "server is not in keyword PIR mode".to_string())?;
-        if keyword.key_size != PUBLIC_KEY_ID_LEN {
+        if keyword.key_size == 0 {
+            return Err("server keyword size must be non-zero".to_string());
+        }
+        if keyword.value_size == 0 {
+            return Err("server value size must be non-zero".to_string());
+        }
+        if keyword.entry_size < keyword.key_size + keyword.value_size {
             return Err(format!(
-                "expected {}-byte keyword ids, server uses {}",
-                PUBLIC_KEY_ID_LEN, keyword.key_size
+                "server entry size {} is smaller than key_size {} + value_size {}",
+                keyword.entry_size, keyword.key_size, keyword.value_size
             ));
         }
 
-        let (params, _, _) = crate::commons::params_rgswpir_given_input_size_and_dim0(
-            public_params.num_items,
-            public_params.item_size_bits,
-            public_params.dim0,
-        );
+        let (params, interpolate_degree, _) =
+            crate::commons::params_rgswpir_given_input_size_and_dim0(
+                public_params.num_items,
+                public_params.item_size_bits,
+                public_params.dim0,
+            );
         let y_client = YClient::new(Client::init(&params));
         let params = y_client.params();
         let gamma = params.poly_len;
@@ -90,32 +93,18 @@ impl KeywordClient {
         let item_size_elements = public_params.item_size_bits / 16;
         if public_params.num_items < db_rows {
             return Err(format!(
-                "server bucket count {} is too small for the PIR scheme (needs at least {}); the dataset must be regenerated with more records",
+                "server bucket count {} is too small for the PIR scheme (needs at least {} records)",
                 public_params.num_items, db_rows
             ));
         }
 
-        let (_, interpolate_degree, _) = crate::commons::params_rgswpir_given_input_size_and_dim0(
-            public_params.num_items,
-            public_params.item_size_bits,
-            public_params.dim0,
-        );
         let c = db_cols_prime / interpolate_degree;
-        let kem_name = if !config.kem_name.is_empty() {
-            config.kem_name
-        } else if !keyword.kem_name.is_empty() {
-            keyword.kem_name.clone()
-        } else {
-            KEM_ML_KEM_768.to_string()
-        };
-
         let rlwe_q_prime_1 = params.get_q_prime_1();
         let rlwe_q_prime_2 = params.get_q_prime_2();
 
         Ok(Self {
             y_client,
             keyword,
-            kem_name,
             packing_type: config.packing_type,
             num_items: public_params.num_items,
             interpolate_degree,
@@ -132,19 +121,30 @@ impl KeywordClient {
         self.y_client.params()
     }
 
-    pub fn kem_name(&self) -> &str {
-        &self.kem_name
+    pub fn key_size(&self) -> usize {
+        self.keyword.key_size
+    }
+
+    pub fn value_size(&self) -> usize {
+        self.keyword.value_size
     }
 
     pub fn packing_params(&self) -> PackParams {
         PackParams::new_fast(self.params(), self.gamma)
     }
 
-    pub fn positions(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> Vec<usize> {
+    pub fn positions(&self, query_key: &[u8]) -> Result<Vec<usize>, String> {
+        if query_key.len() != self.keyword.key_size {
+            return Err(format!(
+                "expected {} keyword bytes, got {}",
+                self.keyword.key_size,
+                query_key.len()
+            ));
+        }
         let cuckoo_seed: [u8; 16] = self.keyword.cuckoo_seed.as_slice().try_into().unwrap();
         let hasher =
             CuckooHash::new_from_seed(cuckoo_seed, self.keyword.num_hashes, self.num_items);
-        hasher.all_positions(query_id)
+        Ok(hasher.all_positions(query_key))
     }
 
     fn build_query_for_index(&self, which_item: usize) -> KeywordQuery {
@@ -209,13 +209,13 @@ impl KeywordClient {
         }
     }
 
-    pub fn query(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> KeywordClientQuery {
-        let positions = self.positions(query_id);
+    pub fn query(&self, query_key: &[u8]) -> Result<KeywordClientQuery, String> {
+        let positions = self.positions(query_key)?;
         let packing_params = self.packing_params();
         let sk_reg = self.y_client.client().get_sk_reg().clone();
         let packing_keys = PackingKeys::init_full(&packing_params, &sk_reg, W_SEED, V_SEED);
         let payload = self.build_query_payload(packing_keys, &positions);
-        KeywordClientQuery { positions, payload }
+        Ok(KeywordClientQuery { positions, payload })
     }
 
     pub fn serialize_query(&self, query: &KeywordClientQuery) -> Vec<u8> {
@@ -254,10 +254,14 @@ impl KeywordClient {
 
     pub fn extract(
         &self,
-        query_id: &[u8; PUBLIC_KEY_ID_LEN],
+        query_key: &[u8],
         query: &KeywordClientQuery,
         response: &KeywordResponsePayload,
     ) -> Option<Vec<u8>> {
+        if query_key.len() != self.keyword.key_size {
+            return None;
+        }
+
         for (i, response_bytes) in response.responses.iter().enumerate() {
             let decrypted = self.decrypt_response_values(response_bytes);
             let bucket_idx = query.positions[i];
@@ -271,26 +275,24 @@ impl KeywordClient {
                 u16_be_to_bytes(&item_values.iter().map(|&v| v as u16).collect::<Vec<_>>());
 
             if entry_bytes.len() >= self.keyword.entry_size
-                && entry_bytes[..self.keyword.key_size] == *query_id
+                && entry_bytes[..self.keyword.key_size] == *query_key
             {
-                let value = entry_bytes
-                    [self.keyword.key_size..self.keyword.key_size + self.keyword.value_size]
-                    .to_vec();
-                if derive_public_key_id(&value, &self.kem_name) == *query_id {
-                    return Some(value);
-                }
+                return Some(
+                    entry_bytes
+                        [self.keyword.key_size..self.keyword.key_size + self.keyword.value_size]
+                        .to_vec(),
+                );
             }
         }
 
         for entry in &response.stash_entries {
-            if entry.len() >= self.keyword.entry_size && entry[..self.keyword.key_size] == *query_id
+            if entry.len() >= self.keyword.entry_size
+                && entry[..self.keyword.key_size] == *query_key
             {
-                let value = entry
-                    [self.keyword.key_size..self.keyword.key_size + self.keyword.value_size]
-                    .to_vec();
-                if derive_public_key_id(&value, &self.kem_name) == *query_id {
-                    return Some(value);
-                }
+                return Some(
+                    entry[self.keyword.key_size..self.keyword.key_size + self.keyword.value_size]
+                        .to_vec(),
+                );
             }
         }
 
@@ -299,11 +301,11 @@ impl KeywordClient {
 
     pub fn extract_from_serialized_response(
         &self,
-        query_id: &[u8; PUBLIC_KEY_ID_LEN],
+        query_key: &[u8],
         query: &KeywordClientQuery,
         response_data: &[u8],
     ) -> Option<Vec<u8>> {
         let response = deserialize_keyword_response(response_data);
-        self.extract(query_id, query, &response)
+        self.extract(query_key, query, &response)
     }
 }
