@@ -13,7 +13,7 @@ use inspire_rs::commons::{
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
 use inspire_rs::{
-    Dataset, DatasetGenerator, KemVariant, load_dataset, public_key_matches_id, save_dataset,
+    Dataset, DatasetGenerator, DatasetWriter, KemVariant, load_dataset, public_key_matches_id,
     setup_keyword_server,
 };
 use rand::{RngExt, SeedableRng};
@@ -47,23 +47,25 @@ impl Drop for TempDirGuard {
 
 fn make_dataset(temp_dir: &Path) -> ([u8; 32], Vec<u8>, Dataset) {
     const RECORD_COUNT: usize = 10_000;
-    let dataset = DatasetGenerator::new(KemVariant::MlKem768, RECORD_COUNT)
-        .with_seed(7)
-        .generate()
-        .unwrap();
+    const KEM: KemVariant = KemVariant::MlKem768;
+
+    let generator = DatasetGenerator::new(KEM, RECORD_COUNT).with_seed(7);
+    let dataset_path = temp_dir.join("keys.bin");
+    let mut writer =
+        DatasetWriter::create(&dataset_path, KEM.name(), RECORD_COUNT, KEM.public_key_len())
+            .unwrap();
+    generator.stream_to_writer(&mut writer, |_, _| {}).unwrap();
+    writer.finish().unwrap();
+
+    let dataset = load_dataset(&dataset_path).unwrap();
     let mut selection_rng = ChaCha20Rng::seed_from_u64(2026);
     let target_index = selection_rng.random_range(0..RECORD_COUNT);
     let expected_record = dataset.records[target_index].clone();
 
-    let dataset_path = temp_dir.join("keys.bin");
-    save_dataset(&dataset_path, &dataset).unwrap();
-    let loaded = load_dataset(&dataset_path).unwrap();
-    assert_eq!(loaded, dataset);
-
     (
         expected_record.public_key_id,
         expected_record.public_key,
-        loaded,
+        dataset,
     )
 }
 

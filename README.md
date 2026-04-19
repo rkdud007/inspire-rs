@@ -17,7 +17,7 @@ use inspire_rs::{DatasetGenerator, KemVariant, save_dataset};
 
 let dataset = DatasetGenerator::new(KemVariant::MlKem768, 10_000)
     .with_seed(7)
-    .generate()?;
+    .generate_in_memory()?;
 save_dataset("keys.bin".as_ref(), &dataset)?;
 ```
 

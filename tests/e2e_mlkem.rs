@@ -12,7 +12,7 @@ fn keyword_pir_roundtrip_mlkem() {
 
     let dataset = DatasetGenerator::new(KemVariant::MlKem768, RECORD_COUNT)
         .with_seed(7)
-        .generate()
+        .generate_in_memory()
         .unwrap();
     let mut selection_rng = ChaCha20Rng::seed_from_u64(2026);
     let target_index = selection_rng.random_range(0..RECORD_COUNT);

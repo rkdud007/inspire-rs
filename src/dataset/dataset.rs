@@ -8,7 +8,7 @@ use sha3::{Digest, Sha3_256};
 pub const DATASET_MAGIC: &[u8; 8] = b"PQKEYV2\0";
 pub const PUBLIC_KEY_ID_LEN: usize = 32;
 pub const PUBLIC_KEY_ID_DOMAIN: &[u8] = b"pq-key:v1:";
-pub const DEFAULT_DATASET_BATCH_SIZE: usize = 10_000;
+pub const DEFAULT_DATASET_BATCH_SIZE: usize = 100_000;
 
 /// Canonical KEM name strings used in the dataset and ID derivation.
 pub const KEM_ML_KEM_512: &str = "ml-kem-512";

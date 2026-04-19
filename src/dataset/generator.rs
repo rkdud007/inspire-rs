@@ -4,9 +4,14 @@ use std::io;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rayon::prelude::*;
+use sha3::{Digest, Sha3_256};
 
-use super::dataset::{DEFAULT_DATASET_BATCH_SIZE, Dataset, DatasetRecord, derive_public_key_id};
+use super::dataset::{
+    DEFAULT_DATASET_BATCH_SIZE, Dataset, DatasetRecord, PUBLIC_KEY_ID_DOMAIN, PUBLIC_KEY_ID_LEN,
+    derive_public_key_id,
+};
 use super::kem::KemVariant;
+use super::writer::DatasetWriter;
 
 #[derive(Clone, Debug)]
 pub struct DatasetGenerator {
@@ -52,18 +57,17 @@ impl DatasetGenerator {
         self.batch_size
     }
 
-    pub fn generate(&self) -> io::Result<Dataset> {
+    /// Generate all records into memory and return a `Dataset`.
+    pub fn generate_in_memory(&self) -> io::Result<Dataset> {
         self.validate()?;
 
-        let public_key_len = self.sample_public_key_len();
+        let public_key_len = self.kem.public_key_len();
         let mut records = Vec::with_capacity(self.count);
         let mut seen_ids = HashSet::with_capacity(self.count);
 
         for chunk_start in (0..self.count).step_by(self.batch_size) {
             let chunk_end = (chunk_start + self.batch_size).min(self.count);
-            let chunk = self.generate_chunk(chunk_start, chunk_end);
-
-            for record in chunk {
+            for record in self.generate_chunk(chunk_start, chunk_end) {
                 if !seen_ids.insert(record.public_key_id) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -82,6 +86,63 @@ impl DatasetGenerator {
         })
     }
 
+    /// Stream generated records directly to a `DatasetWriter` batch by batch.
+    /// Does not hold the full dataset in memory.
+    /// Calls `progress(written, total)` after each batch is flushed.
+    pub fn stream_to_writer(
+        &self,
+        writer: &mut DatasetWriter,
+        mut progress: impl FnMut(usize, usize),
+    ) -> io::Result<()> {
+        self.validate()?;
+
+        let pk_len = writer.public_key_len;
+        let record_size = PUBLIC_KEY_ID_LEN + pk_len;
+        let kem = self.kem;
+        let kem_name = kem.name();
+
+        for chunk_start in (0..self.count).step_by(self.batch_size) {
+            let chunk_end = (chunk_start + self.batch_size).min(self.count);
+            let chunk_len = chunk_end - chunk_start;
+
+            // Pre-allocate flat buffer: [id(32) | pk(pk_len)] × chunk_len
+            let mut buf = vec![0u8; chunk_len * record_size];
+
+            buf.par_chunks_exact_mut(record_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let idx = chunk_start + i;
+                    let mut rng = ChaCha20Rng::seed_from_u64(self.seed);
+                    rng.set_word_pos(idx as u128 * SEED_WORDS);
+                    let mut seed = [0u8; SEED_BYTES];
+                    rng.fill_bytes(&mut seed);
+
+                    let (id_slot, pk_slot) = chunk.split_at_mut(PUBLIC_KEY_ID_LEN);
+                    kem.generate_public_key_into(&seed, pk_slot);
+
+                    let mut hasher = Sha3_256::new();
+                    hasher.update(PUBLIC_KEY_ID_DOMAIN);
+                    hasher.update(kem_name.as_bytes());
+                    hasher.update(&*pk_slot);
+                    id_slot.copy_from_slice(&hasher.finalize());
+                });
+
+            // Write the batch sequentially (DatasetWriter is not Sync)
+            for chunk in buf.chunks_exact(record_size) {
+                let id: [u8; PUBLIC_KEY_ID_LEN] = chunk[..PUBLIC_KEY_ID_LEN].try_into().unwrap();
+                let record = DatasetRecord {
+                    public_key_id: id,
+                    public_key: chunk[PUBLIC_KEY_ID_LEN..].to_vec(),
+                };
+                writer.write_record(&record)?;
+            }
+
+            progress(chunk_end, self.count);
+        }
+
+        Ok(())
+    }
+
     fn validate(&self) -> io::Result<()> {
         if self.count == 0 {
             return Err(io::Error::new(
@@ -98,28 +159,23 @@ impl DatasetGenerator {
         Ok(())
     }
 
-    fn sample_public_key_len(&self) -> usize {
-        let mut rng = ChaCha20Rng::seed_from_u64(self.seed);
-        let mut sample_seed = [0u8; SEED_BYTES];
-        rng.fill_bytes(&mut sample_seed);
-        self.kem.generate_public_key(&sample_seed).len()
-    }
-
     fn generate_chunk(&self, chunk_start: usize, chunk_end: usize) -> Vec<DatasetRecord> {
+        let pk_len = self.kem.public_key_len();
         (chunk_start..chunk_end)
             .into_par_iter()
-            .map(|idx| self.generate_record(idx))
+            .map(|idx| self.generate_record(idx, pk_len))
             .collect()
     }
 
-    fn generate_record(&self, idx: usize) -> DatasetRecord {
+    fn generate_record(&self, idx: usize, pk_len: usize) -> DatasetRecord {
         let mut rng = ChaCha20Rng::seed_from_u64(self.seed);
         rng.set_word_pos(idx as u128 * SEED_WORDS);
 
         let mut record_seed = [0u8; SEED_BYTES];
         rng.fill_bytes(&mut record_seed);
 
-        let public_key = self.kem.generate_public_key(&record_seed);
+        let mut public_key = vec![0u8; pk_len];
+        self.kem.generate_public_key_into(&record_seed, &mut public_key);
         let public_key_id = derive_public_key_id(&public_key, self.kem.name());
 
         DatasetRecord {
