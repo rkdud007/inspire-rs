@@ -1,5 +1,4 @@
 use std::net::TcpStream;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
@@ -9,7 +8,7 @@ use inspire_rs::commons::{
 use inspire_rs::packing::PackingType;
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 
-use inspire_rs::{PUBLIC_KEY_ID_LEN, derive_public_key_id};
+use inspire_rs::PUBLIC_KEY_ID_LEN;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Keyword PIR client for ML-KEM-768 public keys")]
@@ -20,21 +19,13 @@ struct Args {
     /// 32-byte public key id as hex.
     #[arg(long)]
     id: Option<String>,
-
-    /// Public key bytes as hex. The client derives the id locally.
-    #[arg(long)]
-    public_key: Option<String>,
-
-    /// Optional file containing raw public key bytes.
-    #[arg(long)]
-    public_key_file: Option<PathBuf>,
 }
 
 fn parse_hex(input: &str) -> Result<Vec<u8>, String> {
     hex::decode(input.trim_start_matches("0x")).map_err(|err| err.to_string())
 }
 
-fn resolve_query_id(args: &Args, kem_name: &str) -> Result<[u8; PUBLIC_KEY_ID_LEN], String> {
+fn resolve_query_id(args: &Args) -> Result<[u8; PUBLIC_KEY_ID_LEN], String> {
     if let Some(id_hex) = &args.id {
         let bytes = parse_hex(id_hex)?;
         if bytes.len() != PUBLIC_KEY_ID_LEN {
@@ -49,17 +40,7 @@ fn resolve_query_id(args: &Args, kem_name: &str) -> Result<[u8; PUBLIC_KEY_ID_LE
         return Ok(id);
     }
 
-    if let Some(public_key_hex) = &args.public_key {
-        let public_key = parse_hex(public_key_hex)?;
-        return Ok(derive_public_key_id(&public_key, kem_name));
-    }
-
-    if let Some(path) = &args.public_key_file {
-        let public_key = std::fs::read(path).map_err(|err| err.to_string())?;
-        return Ok(derive_public_key_id(&public_key, kem_name));
-    }
-
-    Err("provide either --id, --public-key, or --public-key-file".into())
+    Err("provide --id".into())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         keyword.kem_name.as_str()
     };
-    let query_id = resolve_query_id(&args, kem_name)?;
+    let query_id = resolve_query_id(&args)?;
 
     if keyword.key_size != PUBLIC_KEY_ID_LEN {
         return Err(format!(

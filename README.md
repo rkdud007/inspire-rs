@@ -92,18 +92,6 @@ Query by public-key ID:
 cargo run --bin client -- --server 127.0.0.1:8082 --id <32-byte-hex-id>
 ```
 
-Query by public key:
-
-```bash
-cargo run --bin client -- --server 127.0.0.1:8082 --public-key <hex-public-key>
-```
-
-Query by file:
-
-```bash
-cargo run --bin client -- --server 127.0.0.1:8082 --public-key-file ./public_key.bin
-```
-
 ## End-to-End Test
 
 The integration test in [tests/e2e.rs](tests/e2e.rs) does not spawn binaries. It:
