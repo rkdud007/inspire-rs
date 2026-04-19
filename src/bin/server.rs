@@ -59,10 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.public_key_len
     ));
     log("initializing keyword PIR runtime");
-    let keyword_server = KeywordServer::from_dataset(&dataset, args.buckets, args.dim0)?;
+    let keyword_server = KeywordServer::setup_from_dataset(&dataset, args.buckets, args.dim0)?;
     log("keyword PIR runtime ready");
-    let handshake = keyword_server.handshake();
-    let handshake_json = serde_json::to_vec(&handshake)?;
+    let public_params = keyword_server.public_params();
+    let handshake_json = serde_json::to_vec(&public_params)?;
 
     println!(
         "serving {} {} public keys on {}",
@@ -72,9 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "entry size {} bytes, buckets {}, dim0 {}",
-        handshake.item_size_bits / 8,
-        handshake.num_items,
-        handshake.dim0
+        public_params.item_size_bits / 8,
+        public_params.num_items,
+        public_params.dim0
     );
 
     let listener = TcpListener::bind(&args.listen)?;
@@ -109,22 +109,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
 
-            match keyword_server.handle_serialized_request(query_bytes) {
-                Ok(response_bytes) => {
-                    if let Err(err) = send_msg(&mut stream, MSG_KEYWORD_RESPONSE, &response_bytes) {
-                        eprintln!("client error: {err}");
-                        break;
-                    }
-                    println!(
-                        "query answered in {:.1}ms",
-                        start.elapsed().as_secs_f64() * 1000.0
-                    );
-                }
-                Err(err) => {
-                    eprintln!("client error: {err}");
-                    break;
-                }
+            let response_bytes = keyword_server.respond_to_serialized_query(query_bytes);
+            if let Err(err) = send_msg(&mut stream, MSG_KEYWORD_RESPONSE, &response_bytes) {
+                eprintln!("client error: {err}");
+                break;
             }
+            println!(
+                "query answered in {:.1}ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
 

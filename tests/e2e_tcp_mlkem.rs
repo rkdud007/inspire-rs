@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use inspire_rs::commons::{
-    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
+    MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, PublicParams, recv_msg, send_msg,
 };
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
@@ -70,8 +70,8 @@ fn spawn_keyword_server(
 ) -> thread::JoinHandle<std::io::Result<()>> {
     thread::spawn(move || {
         let (mut stream, _) = listener.accept()?;
-        let handshake = serde_json::to_vec(&server.handshake()).unwrap();
-        send_msg(&mut stream, MSG_HANDSHAKE, &handshake)?;
+        let public_params = serde_json::to_vec(&server.public_params()).unwrap();
+        send_msg(&mut stream, MSG_HANDSHAKE, &public_params)?;
         let (msg_type, query_bytes) = recv_msg(&mut stream)?;
         if msg_type != MSG_KEYWORD_QUERY {
             return Err(std::io::Error::new(
@@ -79,18 +79,18 @@ fn spawn_keyword_server(
                 format!("unexpected message type: {msg_type}"),
             ));
         }
-        let response_bytes = server.handle_serialized_request(query_bytes)?;
+        let response_bytes = server.respond_to_serialized_query(query_bytes);
         send_msg(&mut stream, MSG_KEYWORD_RESPONSE, &response_bytes)
     })
 }
 
 #[test]
 #[ignore = "requires --features gpu and a working CUDA toolchain/runtime"]
-fn keyword_pir_roundtrip() {
+fn keyword_pir_roundtrip_tcp_mlkem() {
     let temp_dir = TempDirGuard::new();
     let (query_id, expected_public_key, dataset) = make_dataset(temp_dir.path());
 
-    let server = KeywordServer::from_dataset(&dataset, None, None).unwrap();
+    let server = KeywordServer::setup_from_dataset(&dataset, None, None).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server_thread = spawn_keyword_server(server, listener);
@@ -99,16 +99,19 @@ fn keyword_pir_roundtrip() {
     let (msg_type, handshake_bytes) = recv_msg(&mut stream).unwrap();
     assert_eq!(msg_type, MSG_HANDSHAKE);
 
-    let handshake: HandshakeParams = serde_json::from_slice(&handshake_bytes).unwrap();
-    let client = KeywordClient::from_handshake(&handshake, KeywordClientConfig::default()).unwrap();
-    let request = client.build_request(&query_id);
-    send_msg(&mut stream, MSG_KEYWORD_QUERY, request.payload()).unwrap();
+    let public_params: PublicParams = serde_json::from_slice(&handshake_bytes).unwrap();
+    let client =
+        KeywordClient::setup_from_public_params(&public_params, KeywordClientConfig::default())
+            .unwrap();
+    let query = client.query(&query_id);
+    let query_bytes = client.serialize_query(&query);
+    send_msg(&mut stream, MSG_KEYWORD_QUERY, &query_bytes).unwrap();
 
     let (msg_type, response_bytes) = recv_msg(&mut stream).unwrap();
     assert_eq!(msg_type, MSG_KEYWORD_RESPONSE);
 
     let public_key = client
-        .find_public_key_in_serialized_response(&query_id, &request, &response_bytes)
+        .extract_from_serialized_response(&query_id, &query, &response_bytes)
         .expect("query should return the inserted public key");
     assert_eq!(public_key, expected_public_key);
 

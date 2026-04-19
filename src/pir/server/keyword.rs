@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use crate::PUBLIC_KEY_ID_LEN;
 use crate::aligned_memory::AlignedMemory64;
 use crate::commons::{
-    DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload, RGSW_SEEDS,
+    KeywordPirHandshake, KeywordQueryPayload, KeywordResponsePayload, PublicParams, RGSW_SEEDS,
     deserialize_keyword_query, params_rgswpir_given_input_size_and_dim0,
     serialize_keyword_response,
 };
@@ -66,7 +66,7 @@ pub struct KeywordServer<T: Sync> {
 }
 
 impl KeywordServer<u16> {
-    pub fn from_dataset(
+    pub fn setup_from_dataset(
         dataset: &Dataset,
         buckets: Option<usize>,
         dim0: Option<usize>,
@@ -245,7 +245,7 @@ impl<T: Sync> KeywordServer<T> {
         self.y_server.params.as_ref()
     }
 
-    pub fn handshake(&self) -> HandshakeParams {
+    pub fn public_params(&self) -> PublicParams {
         let num_accounts = self
             .table
             .occupied
@@ -253,7 +253,7 @@ impl<T: Sync> KeywordServer<T> {
             .filter(|occupied| **occupied)
             .count()
             + self.table.stash.len();
-        HandshakeParams {
+        PublicParams {
             num_items: self.num_items,
             item_size_bits: self.entry_size * 8,
             dim0: self.dim0,
@@ -269,24 +269,14 @@ impl<T: Sync> KeywordServer<T> {
         }
     }
 
-    pub fn handle_request(&self, query_bytes: Vec<u8>) -> io::Result<KeywordResponsePayload> {
+    pub fn respond(&self, query: &KeywordQueryPayload) -> KeywordResponsePayload {
         let params = self.params();
-        let packing_params = &self.y_server.packing_params_set[&self.gamma];
-        let decoded_query = deserialize_keyword_query(params, packing_params, query_bytes);
         cuda_packing_online::gpu_expand_and_set_keys(
-            decoded_query
-                .packing_keys
-                .y_body_condensed
-                .as_ref()
-                .unwrap(),
-            decoded_query
-                .packing_keys
-                .z_body_condensed
-                .as_ref()
-                .unwrap(),
+            query.packing_keys.y_body_condensed.as_ref().unwrap(),
+            query.packing_keys.z_body_condensed.as_ref().unwrap(),
             params,
         );
-        let DecodedKeywordQuery { queries, .. } = decoded_query;
+        let queries = &query.queries;
 
         let rgsw_fold_and_switch = |ct_gsw_body: &PolyMatrixNTT,
                                     packed: &[PolyMatrixRaw]|
@@ -369,16 +359,23 @@ impl<T: Sync> KeywordServer<T> {
             }
         }
 
-        Ok(KeywordResponsePayload {
+        KeywordResponsePayload {
             responses: all_responses,
             stash_entries: self.table.stash.clone(),
             sidecar_entries: vec![],
             block_number: 0,
-        })
+        }
     }
 
-    pub fn handle_serialized_request(&self, query_bytes: Vec<u8>) -> io::Result<Vec<u8>> {
-        let response = self.handle_request(query_bytes)?;
-        Ok(serialize_keyword_response(&response))
+    pub fn deserialize_query(&self, query_bytes: Vec<u8>) -> KeywordQueryPayload {
+        let params = self.params();
+        let packing_params = &self.y_server.packing_params_set[&self.gamma];
+        deserialize_keyword_query(params, packing_params, query_bytes)
+    }
+
+    pub fn respond_to_serialized_query(&self, query_bytes: Vec<u8>) -> Vec<u8> {
+        let query = self.deserialize_query(query_bytes);
+        let response = self.respond(&query);
+        serialize_keyword_response(&response)
     }
 }

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use inspire_rs::commons::{
-    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
+    MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, PublicParams, recv_msg, send_msg,
 };
 use inspire_rs::packing::PackingType;
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
@@ -54,8 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("expected handshake, got message type {}", msg_type).into());
     }
 
-    let handshake: HandshakeParams = serde_json::from_slice(&handshake_bytes)?;
-    let keyword = handshake
+    let public_params: PublicParams = serde_json::from_slice(&handshake_bytes)?;
+    let keyword = public_params
         .keyword_pir
         .as_ref()
         .ok_or("server is not in keyword PIR mode")?;
@@ -77,8 +77,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let packing_type = PackingType::InspiRING;
-    let keyword_client = KeywordClient::from_handshake(
-        &handshake,
+    let keyword_client = KeywordClient::setup_from_public_params(
+        &public_params,
         KeywordClientConfig {
             kem_name: kem_name.to_string(),
             packing_type,
@@ -86,8 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let t_total = Instant::now();
-    let request = keyword_client.build_request(&query_id);
-    send_msg(&mut stream, MSG_KEYWORD_QUERY, request.payload())?;
+    let query = keyword_client.query(&query_id);
+    let query_bytes = keyword_client.serialize_query(&query);
+    send_msg(&mut stream, MSG_KEYWORD_QUERY, &query_bytes)?;
 
     let (msg_type, response_data) = recv_msg(&mut stream)?;
     if msg_type != MSG_KEYWORD_RESPONSE {
@@ -95,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let found_public_key =
-        keyword_client.find_public_key_in_serialized_response(&query_id, &request, &response_data);
+        keyword_client.extract_from_serialized_response(&query_id, &query, &response_data);
 
     println!("query id: {}", hex::encode(query_id));
     if let Some(public_key) = found_public_key {

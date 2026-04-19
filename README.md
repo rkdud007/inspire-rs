@@ -27,20 +27,18 @@ save_dataset("keys.bin".as_ref(), &dataset)?;
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
 
-let server = KeywordServer::from_dataset(&dataset, None, None)?;
-let handshake = server.handshake();
+let server = KeywordServer::setup_from_dataset(&dataset, None, None)?;
+let public_params = server.public_params();
 
-let client = KeywordClient::from_handshake(&handshake, KeywordClientConfig::default())
+let client = KeywordClient::setup_from_public_params(&public_params, KeywordClientConfig::default())
     .map_err(std::io::Error::other)?;
-let request = client.build_request(&query_id);
+let query = client.query(&query_id);
 
-// Send `request.payload()` over any transport you want.
-let response_bytes = server.handle_serialized_request(request.payload().to_vec())?;
-
-let public_key = client.find_public_key_in_serialized_response(
+let response = server.respond(query.payload());
+let value = client.extract(
     &query_id,
-    &request,
-    &response_bytes,
+    &query,
+    &response,
 );
 ```
 
@@ -94,16 +92,20 @@ cargo run --bin client -- --server 127.0.0.1:8082 --id <32-byte-hex-id>
 
 ## End-to-End Test
 
-The integration test in [tests/e2e.rs](tests/e2e.rs) does not spawn binaries. It:
-- generates a 10,000-record dataset through the library
-- saves and reloads it from a temp directory
-- constructs `KeywordServer` and `KeywordClient` directly
-- performs a real TCP handshake/query/response roundtrip
+There are two ignored ML-KEM end-to-end tests:
+- [tests/e2e_mlkem.rs](tests/e2e_mlkem.rs): typed in-memory request/response, no TCP or HTTP
+- [tests/e2e_tcp_mlkem.rs](tests/e2e_tcp_mlkem.rs): TCP adapter roundtrip on top of the same library abstractions
 
-Run it with:
+Run the in-memory typed test with:
 
 ```bash
-cargo test --features gpu --test e2e -- --ignored --nocapture
+cargo test --features gpu --test e2e_mlkem -- --ignored --nocapture
+```
+
+Run the TCP adapter test with:
+
+```bash
+cargo test --features gpu --test e2e_tcp_mlkem -- --ignored --nocapture
 ```
 
 ## Notes

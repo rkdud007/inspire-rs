@@ -32,13 +32,15 @@ pub struct KeywordPirHandshake {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub struct HandshakeParams {
+pub struct PublicParams {
     pub num_items: usize,
     pub item_size_bits: usize,
     pub dim0: usize,
     #[serde(default)]
     pub keyword_pir: Option<KeywordPirHandshake>,
 }
+
+pub type HandshakeParams = PublicParams;
 
 /// Send a framed message: [8 bytes: payload length (BE u64)] [1 byte: msg type] [payload]
 pub fn send_msg(stream: &mut TcpStream, msg_type: u8, payload: &[u8]) -> io::Result<()> {
@@ -574,7 +576,8 @@ pub struct KeywordQuery {
     pub ct_gsw_body: PolyMatrixNTT,
 }
 
-pub struct DecodedKeywordQuery {
+#[derive(Clone)]
+pub struct KeywordQueryPayload {
     pub packing_keys: PackingKeys,
     pub queries: Vec<KeywordQuery>,
 }
@@ -595,15 +598,11 @@ pub struct KeywordResponsePayload {
 
 /// Serialize a keyword query: shared packing keys + N per-hash queries.
 /// Format: [u8 num_queries][bit-packed: keys | per-query (query_row + rgsw_body)]
-pub fn serialize_keyword_query(
-    params: &Params,
-    packing_keys: &mut PackingKeys,
-    queries: &[KeywordQuery],
-) -> Vec<u8> {
+pub fn serialize_keyword_query(params: &Params, query: &KeywordQueryPayload) -> Vec<u8> {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, _crt1_bits) = crt_bits(params);
     let total_bits = crt0_bits + _crt1_bits;
-    let num_queries = queries.len();
+    let num_queries = query.queries.len();
 
     let num_keys = params.t_exp_left * params.poly_len * 2;
     let per_query = db_rows + 2 * params.t_gsw * params.poly_len;
@@ -618,12 +617,14 @@ pub fn serialize_keyword_query(
 
     // Shared packing keys (y, z interleaved)
     for i in 0..params.t_exp_left {
-        let y_poly = packing_keys
+        let y_poly = query
+            .packing_keys
             .y_body_condensed
             .as_ref()
             .unwrap()
             .get_poly(0, i);
-        let z_poly = packing_keys
+        let z_poly = query
+            .packing_keys
             .z_body_condensed
             .as_ref()
             .unwrap()
@@ -647,7 +648,7 @@ pub fn serialize_keyword_query(
     }
 
     // Per-query data
-    for query in queries {
+    for query in &query.queries {
         bo = write_condensed_values(
             &mut buf,
             bo,
@@ -677,7 +678,7 @@ pub fn deserialize_keyword_query<'a>(
     params: &'a Params,
     packing_params: &'a PackParams,
     all_u8: Vec<u8>,
-) -> DecodedKeywordQuery {
+) -> KeywordQueryPayload {
     let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
     let (crt0_bits, crt1_bits) = crt_bits(params);
     let total_bits = crt0_bits + crt1_bits;
@@ -756,7 +757,7 @@ pub fn deserialize_keyword_query<'a>(
         });
     }
 
-    DecodedKeywordQuery {
+    KeywordQueryPayload {
         packing_keys,
         queries,
     }
