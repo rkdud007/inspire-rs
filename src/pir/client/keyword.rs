@@ -1,6 +1,6 @@
 use crate::commons::{
     HandshakeParams, KeywordPirHandshake, KeywordQuery, KeywordResponsePayload, RGSW_SEEDS,
-    serialize_keyword_query,
+    deserialize_keyword_response, serialize_keyword_query,
 };
 use crate::gadget::get_bits_per;
 use crate::kv::cuckoo::{CuckooHash, u16_be_to_bytes};
@@ -26,6 +26,26 @@ impl Default for KeywordClientConfig {
             kem_name: KEM_ML_KEM_768.to_string(),
             packing_type: PackingType::InspiRING,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct KeywordClientRequest {
+    positions: Vec<usize>,
+    payload: Vec<u8>,
+}
+
+impl KeywordClientRequest {
+    pub fn positions(&self) -> &[usize] {
+        &self.positions
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub fn into_payload(self) -> Vec<u8> {
+        self.payload
     }
 }
 
@@ -190,13 +210,13 @@ impl KeywordClient {
         serialize_keyword_query(self.params(), packing_keys, &queries)
     }
 
-    pub fn build_request(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> (Vec<usize>, Vec<u8>) {
+    pub fn build_request(&self, query_id: &[u8; PUBLIC_KEY_ID_LEN]) -> KeywordClientRequest {
         let positions = self.positions(query_id);
         let packing_params = self.packing_params();
         let sk_reg = self.y_client.client().get_sk_reg().clone();
         let mut packing_keys = PackingKeys::init_full(&packing_params, &sk_reg, W_SEED, V_SEED);
-        let serialized = self.serialize_request(&mut packing_keys, &positions);
-        (positions, serialized)
+        let payload = self.serialize_request(&mut packing_keys, &positions);
+        KeywordClientRequest { positions, payload }
     }
 
     fn decrypt_response_values(&self, response_data: &[u8]) -> Vec<u64> {
@@ -232,12 +252,12 @@ impl KeywordClient {
     pub fn find_public_key(
         &self,
         query_id: &[u8; PUBLIC_KEY_ID_LEN],
-        positions: &[usize],
+        request: &KeywordClientRequest,
         response: &KeywordResponsePayload,
     ) -> Option<Vec<u8>> {
         for (i, response_bytes) in response.responses.iter().enumerate() {
             let decrypted = self.decrypt_response_values(response_bytes);
-            let bucket_idx = positions[i];
+            let bucket_idx = request.positions[i];
             let target_col = (bucket_idx % self.per) * self.item_size_elements;
             let db_poly = target_col / self.gamma;
             let result_poly = db_poly / self.interpolate_degree;
@@ -272,5 +292,15 @@ impl KeywordClient {
         }
 
         None
+    }
+
+    pub fn find_public_key_in_serialized_response(
+        &self,
+        query_id: &[u8; PUBLIC_KEY_ID_LEN],
+        request: &KeywordClientRequest,
+        response_data: &[u8],
+    ) -> Option<Vec<u8>> {
+        let response = deserialize_keyword_response(response_data);
+        self.find_public_key(query_id, request, &response)
     }
 }

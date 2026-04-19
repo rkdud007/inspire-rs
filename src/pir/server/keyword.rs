@@ -4,14 +4,13 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io;
 use std::marker::PhantomData;
-use std::net::TcpStream;
 
 use crate::PUBLIC_KEY_ID_LEN;
 use crate::aligned_memory::AlignedMemory64;
 use crate::commons::{
-    DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload,
-    MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, RGSW_SEEDS, deserialize_keyword_query,
-    params_rgswpir_given_input_size_and_dim0, recv_msg, send_msg, serialize_keyword_response,
+    DecodedKeywordQuery, HandshakeParams, KeywordPirHandshake, KeywordResponsePayload, RGSW_SEEDS,
+    deserialize_keyword_query, params_rgswpir_given_input_size_and_dim0,
+    serialize_keyword_response,
 };
 use crate::dataset::Dataset;
 use crate::gadget::gadget_invert;
@@ -270,15 +269,7 @@ impl<T: Sync> KeywordServer<T> {
         }
     }
 
-    pub fn process_query(&self, stream: &mut TcpStream) -> io::Result<()> {
-        let (msg_type, query_bytes) = recv_msg(stream)?;
-        if msg_type != MSG_KEYWORD_QUERY {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unexpected message type: {msg_type}"),
-            ));
-        }
-
+    pub fn handle_request(&self, query_bytes: Vec<u8>) -> io::Result<KeywordResponsePayload> {
         let params = self.params();
         let packing_params = &self.y_server.packing_params_set[&self.gamma];
         let decoded_query = deserialize_keyword_query(params, packing_params, query_bytes);
@@ -378,12 +369,16 @@ impl<T: Sync> KeywordServer<T> {
             }
         }
 
-        let response_data = serialize_keyword_response(&KeywordResponsePayload {
+        Ok(KeywordResponsePayload {
             responses: all_responses,
             stash_entries: self.table.stash.clone(),
             sidecar_entries: vec![],
             block_number: 0,
-        });
-        send_msg(stream, MSG_KEYWORD_RESPONSE, &response_data)
+        })
+    }
+
+    pub fn handle_serialized_request(&self, query_bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+        let response = self.handle_request(query_bytes)?;
+        Ok(serialize_keyword_response(&response))
     }
 }

@@ -8,8 +8,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use inspire_rs::commons::{
-    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE,
-    deserialize_keyword_response, recv_msg, send_msg,
+    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
 };
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
@@ -73,7 +72,15 @@ fn spawn_keyword_server(
         let (mut stream, _) = listener.accept()?;
         let handshake = serde_json::to_vec(&server.handshake()).unwrap();
         send_msg(&mut stream, MSG_HANDSHAKE, &handshake)?;
-        server.process_query(&mut stream)
+        let (msg_type, query_bytes) = recv_msg(&mut stream)?;
+        if msg_type != MSG_KEYWORD_QUERY {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unexpected message type: {msg_type}"),
+            ));
+        }
+        let response_bytes = server.handle_serialized_request(query_bytes)?;
+        send_msg(&mut stream, MSG_KEYWORD_RESPONSE, &response_bytes)
     })
 }
 
@@ -94,15 +101,14 @@ fn keyword_pir_roundtrip() {
 
     let handshake: HandshakeParams = serde_json::from_slice(&handshake_bytes).unwrap();
     let client = KeywordClient::from_handshake(&handshake, KeywordClientConfig::default()).unwrap();
-    let (positions, request_bytes) = client.build_request(&query_id);
-    send_msg(&mut stream, MSG_KEYWORD_QUERY, &request_bytes).unwrap();
+    let request = client.build_request(&query_id);
+    send_msg(&mut stream, MSG_KEYWORD_QUERY, request.payload()).unwrap();
 
     let (msg_type, response_bytes) = recv_msg(&mut stream).unwrap();
     assert_eq!(msg_type, MSG_KEYWORD_RESPONSE);
 
-    let response = deserialize_keyword_response(&response_bytes);
     let public_key = client
-        .find_public_key(&query_id, &positions, &response)
+        .find_public_key_in_serialized_response(&query_id, &request, &response_bytes)
         .expect("query should return the inserted public key");
     assert_eq!(public_key, expected_public_key);
 

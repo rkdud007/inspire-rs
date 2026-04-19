@@ -4,8 +4,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use inspire_rs::commons::{
-    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE,
-    deserialize_keyword_response, recv_msg, send_msg,
+    HandshakeParams, MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
 };
 use inspire_rs::packing::PackingType;
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
@@ -106,16 +105,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let t_total = Instant::now();
-    let (positions, serialized) = keyword_client.build_request(&query_id);
-    send_msg(&mut stream, MSG_KEYWORD_QUERY, &serialized)?;
+    let request = keyword_client.build_request(&query_id);
+    send_msg(&mut stream, MSG_KEYWORD_QUERY, request.payload())?;
 
     let (msg_type, response_data) = recv_msg(&mut stream)?;
     if msg_type != MSG_KEYWORD_RESPONSE {
         return Err(format!("expected keyword response, got {}", msg_type).into());
     }
 
-    let response = deserialize_keyword_response(&response_data);
-    let found_public_key = keyword_client.find_public_key(&query_id, &positions, &response);
+    let found_public_key =
+        keyword_client.find_public_key_in_serialized_response(&query_id, &request, &response_data);
 
     println!("query id: {}", hex::encode(query_id));
     if let Some(public_key) = found_public_key {

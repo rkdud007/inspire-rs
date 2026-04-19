@@ -6,7 +6,7 @@ The library exposes:
 - batched dataset generation
 - a keyword-PIR server wrapper
 - a keyword-PIR client wrapper
-- a simple TCP wire protocol for handshake, query, and response exchange
+- transport-neutral request/response handling, with the demo binaries using TCP framing
 
 ## Library API
 
@@ -24,9 +24,6 @@ save_dataset("keys.bin".as_ref(), &dataset)?;
 ### Run a server and client
 
 ```rust
-use inspire_rs::commons::{
-    MSG_HANDSHAKE, MSG_KEYWORD_QUERY, deserialize_keyword_response, recv_msg, send_msg,
-};
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::pir::server::KeywordServer;
 
@@ -35,12 +32,16 @@ let handshake = server.handshake();
 
 let client = KeywordClient::from_handshake(&handshake, KeywordClientConfig::default())
     .map_err(std::io::Error::other)?;
-let (positions, request_bytes) = client.build_request(&query_id);
+let request = client.build_request(&query_id);
 
-// Send `request_bytes` over TCP using `send_msg(..., MSG_KEYWORD_QUERY, ...)`
-// Receive response bytes with `recv_msg(...)`
-let response = deserialize_keyword_response(&response_bytes);
-let public_key = client.find_public_key(&query_id, &positions, &response);
+// Send `request.payload()` over any transport you want.
+let response_bytes = server.handle_serialized_request(request.payload().to_vec())?;
+
+let public_key = client.find_public_key_in_serialized_response(
+    &query_id,
+    &request,
+    &response_bytes,
+);
 ```
 
 ## Demo Commands

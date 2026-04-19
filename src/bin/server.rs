@@ -5,7 +5,9 @@ use std::time::Instant;
 
 use clap::Parser;
 
-use inspire_rs::commons::{MSG_HANDSHAKE, send_msg};
+use inspire_rs::commons::{
+    MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
+};
 use inspire_rs::load_dataset;
 use inspire_rs::pir::server::KeywordServer;
 
@@ -93,14 +95,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             let start = Instant::now();
-            match keyword_server.process_query(&mut stream) {
-                Ok(()) => {
+            let (msg_type, query_bytes) = match recv_msg(&mut stream) {
+                Ok(message) => message,
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(err) => {
+                    eprintln!("client error: {err}");
+                    break;
+                }
+            };
+
+            if msg_type != MSG_KEYWORD_QUERY {
+                eprintln!("client error: unexpected message type {msg_type}");
+                break;
+            }
+
+            match keyword_server.handle_serialized_request(query_bytes) {
+                Ok(response_bytes) => {
+                    if let Err(err) = send_msg(&mut stream, MSG_KEYWORD_RESPONSE, &response_bytes) {
+                        eprintln!("client error: {err}");
+                        break;
+                    }
                     println!(
                         "query answered in {:.1}ms",
                         start.elapsed().as_secs_f64() * 1000.0
                     );
                 }
-                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(err) => {
                     eprintln!("client error: {err}");
                     break;
