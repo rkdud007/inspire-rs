@@ -322,7 +322,7 @@ pub fn gpu_packing_online_upload_keys_rs(
 /// Returns Vec<PolyMatrixRaw> matching the output of pack_many_lwes_inspir.
 pub fn gpu_packing_online_run<'a>(
     params: &'a Params,
-    precomp_inspir_vec: &[PrecompInsPIR<'a>],
+    precomp_inspir_vec: &[PrecompInsPIR],
     b_values: &[u64],
     gamma: usize,
 ) -> Vec<PolyMatrixRaw> {

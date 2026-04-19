@@ -142,7 +142,7 @@ pub fn generate_fake_pack_pub_params<'a>(params: &'a Params) -> Vec<PolyMatrixNT
 pub type Precomp = Vec<(PolyMatrixNTT, Vec<PolyMatrixNTT>, Vec<Vec<usize>>)>;
 
 #[derive(Clone)]
-pub struct OfflinePrecomputedValues<'a> {
+pub struct OfflinePrecomputedValues {
     // pub hint_0: Vec<u64>,
     pub hint_1: Vec<u64>,
     pub pseudorandom_query_1: Vec<PolyMatrixNTT>,
@@ -156,7 +156,7 @@ pub struct OfflinePrecomputedValues<'a> {
     // pub w_all: PolyMatrixNTT,
     // pub w_bar_all: PolyMatrixNTT,
     // pub v_mask: PolyMatrixNTT,
-    pub offline_packing_keys: OfflinePackingKeys<'a>,
+    pub offline_packing_keys: OfflinePackingKeys,
 }
 
 pub struct Response {
@@ -296,7 +296,7 @@ where
         }
     }
 
-    pub fn new_small<'b, I>(
+    pub fn new_small<'a, 'b, I>(
         params: &'a Params,
         mut db: I,
         protocol_type: ProtocolType,
@@ -383,7 +383,7 @@ where
         let now = Instant::now();
         let mut result = AlignedMemory64::new(db_cols);
         fast_batched_dot_product_generic::<_>(
-            self.params,
+            &self.params,
             result.as_mut_slice(),
             &aligned_query_packed[..query_rows * db_rows_padded],
             db_rows_padded,
@@ -447,7 +447,7 @@ where
         assert_eq!(preprocessed_query.len(), db_rows_poly);
 
         let db = self.db();
-        let params = self.params;
+        let params = &*self.params;
         let protocol_type = self.protocol_type;
         let col_vec: Vec<usize> = col_range.clone().collect();
         let how_many = params.poly_len / (1 << (-min(0 as isize, params.db_dim_1 as isize)));
@@ -523,7 +523,7 @@ where
             } else {
                 crate::pir::utils::negacyclic_perm(query_raw.get_poly(0, 0), 0, self.params.modulus)
             };
-            let mut query_transformed_pol = PolyMatrixRaw::zero(self.params, 1, 1);
+            let mut query_transformed_pol = PolyMatrixRaw::zero(&self.params, 1, 1);
             query_transformed_pol
                 .as_mut_slice()
                 .copy_from_slice(&query_raw_transformed);
@@ -545,8 +545,8 @@ where
         let preprocessed_query = self.generate_pseudorandom_query(public_seed_idx);
 
         // Upload NTT tables and query to GPU
-        cuda_hint::gpu_hint_setup_tables(self.params);
-        cuda_hint::gpu_hint_setup_query(&preprocessed_query, self.params);
+        cuda_hint::gpu_hint_setup_tables(&self.params);
+        cuda_hint::gpu_hint_setup_query(&preprocessed_query, &self.params);
 
         let db_rows = 1usize << (self.params.db_dim_1 + self.params.poly_len_log2);
         let db_rows_poly = if (self.params.db_dim_1 as isize) < 0 {
@@ -557,7 +557,7 @@ where
 
         // Run GPU hint computation (uses device DB from encode if available)
         let result =
-            cuda_hint::gpu_hint_compute_rs(self.db_u16(), db_rows, cols, db_rows_poly, self.params);
+            cuda_hint::gpu_hint_compute_rs(self.db_u16(), db_rows, cols, db_rows_poly, &self.params);
 
         cuda_hint::gpu_hint_cleanup();
         result
@@ -680,10 +680,10 @@ where
         gamma: usize,
         measurement: Option<&mut Measurement>,
         online_only: bool,
-    ) -> OfflinePrecomputedValues<'_> {
+    ) -> OfflinePrecomputedValues {
         // Set up some parameters
 
-        let params = self.params;
+        let params = &*self.params;
         assert_eq!(self.protocol_type, ProtocolType::SimplePIR);
         let db_cols = params.instances * params.poly_len;
         let db_cols_prime = (db_cols as f64 / gamma as f64).ceil() as usize;
@@ -743,8 +743,8 @@ where
         if use_gpu_prep_pack {
             // GPU-fused path: hint stays on device, prep_pack runs on GPU
             let preprocessed_query = self.generate_pseudorandom_query(SEED_0);
-            cuda_hint::gpu_hint_setup_tables(self.params);
-            cuda_hint::gpu_hint_setup_query(&preprocessed_query, self.params);
+            cuda_hint::gpu_hint_setup_tables(&self.params);
+            cuda_hint::gpu_hint_setup_query(&preprocessed_query, &self.params);
             let db_rows = 1usize << (self.params.db_dim_1 + self.params.poly_len_log2);
             let db_rows_poly = if (self.params.db_dim_1 as isize) < 0 {
                 1
@@ -758,7 +758,7 @@ where
                 db_rows,
                 db_cols,
                 db_rows_poly,
-                self.params,
+                &self.params,
             );
             let _ = t0.elapsed();
 
@@ -1046,10 +1046,10 @@ where
         gamma: usize,
         measurement: Option<&mut Measurement>,
         online_only: bool,
-    ) -> OfflinePrecomputedValues<'_> {
+    ) -> OfflinePrecomputedValues {
         // Set up some parameters
 
-        let params = self.params;
+        let params = &*self.params;
 
         let lwe_params = LWEParams::default();
         let db_cols = 1 << (params.db_dim_2 + params.poly_len_log2);
@@ -1326,13 +1326,13 @@ where
         // gamma[2] is used to pack the body in the second layer
         measurement: Option<&mut Measurement>,
         online_only: bool,
-    ) -> OfflinePrecomputedValues<'_> {
+    ) -> OfflinePrecomputedValues {
         // Set up some parameters
 
         assert_eq!(self.second_level_packing_mask, PackingType::InspiRING);
         assert!(gammas.len() >= 2);
 
-        let params = self.params;
+        let params = &*self.params;
         let db_cols = params.instances * params.poly_len;
         let db_cols_prime = (db_cols as f64 / gammas[0] as f64).ceil() as usize;
         let rlwe_q_prime_2 = params.get_q_prime_2();
@@ -1687,13 +1687,13 @@ where
         &self,
         gamma: usize,
         first_dim_queries_packed: &[u64],
-        offline_vals: &OfflinePrecomputedValues<'a>,
+        offline_vals: &OfflinePrecomputedValues,
         packing_keys: &mut PackingKeys,
         measurement: Option<&mut Measurement>,
     ) -> Vec<Vec<u8>> {
         assert_eq!(self.protocol_type, ProtocolType::SimplePIR);
 
-        let params = self.params;
+        let params = &*self.params;
 
         // RLWE reduced moduli
         let rlwe_q_prime_1 = params.get_q_prime_1();
@@ -1779,14 +1779,14 @@ where
         &self,
         gamma: usize,
         packing_keys: &mut PackingKeys,
-        offline_vals: &mut OfflinePrecomputedValues<'a>,
+        offline_vals: &mut OfflinePrecomputedValues,
         first_dim_queries_packed: &[u32],
         second_dim_queries: &[&[u64]],
         mut measurement: Option<&mut Measurement>,
     ) -> Vec<Vec<Vec<u8>>> {
         // Set up some parameters
 
-        let params = self.params;
+        let params = &*self.params;
         let lwe_params = LWEParams::default();
 
         let db_cols = self.db_cols();
@@ -2114,7 +2114,7 @@ where
 
     pub fn perform_online_computation_medium_payload(
         &self,
-        offline_vals: &mut OfflinePrecomputedValues<'a>,
+        offline_vals: &mut OfflinePrecomputedValues,
         first_dim_queries_packed: &[u64],
         second_dim_queries: &[&[u64]],
         mut packing_keys_set: HashMap<usize, PackingKeys>,
@@ -2124,7 +2124,7 @@ where
     ) -> Response {
         // Set up some parameters
 
-        let params = self.params;
+        let params = &*self.params;
         let precomp_inspir_vec_first_layer = &offline_vals.precomp_inspir_vec_first_layer;
         let precomp_inspir_vec = &offline_vals.precomp_inspir_vec;
         let hint_1_combined = &mut offline_vals.hint_1;

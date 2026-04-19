@@ -380,7 +380,7 @@ impl<T: Sync> KeywordServer<T> {
             all_responses.push(response_0);
             all_responses.push(response_1);
         } else {
-            for query in &queries {
+            for query in queries.iter() {
                 let packed = gpu_first_pass(&query.packed_query_row);
                 let response = rgsw_fold_and_switch(&query.ct_gsw_body, &packed);
                 all_responses.push(response);

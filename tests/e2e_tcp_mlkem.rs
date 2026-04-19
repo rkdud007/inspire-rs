@@ -16,7 +16,7 @@ use inspire_rs::{
     Dataset, DatasetGenerator, KemVariant, load_dataset, public_key_matches_id, save_dataset,
     setup_keyword_server,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 struct TempDirGuard {

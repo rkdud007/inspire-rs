@@ -2,7 +2,7 @@
 
 use inspire_rs::pir::client::{KeywordClient, KeywordClientConfig};
 use inspire_rs::{DatasetGenerator, KemVariant, public_key_matches_id, setup_keyword_server};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 #[test]

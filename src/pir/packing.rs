@@ -1785,8 +1785,8 @@ pub fn generate_rotations_double<'a>(
 }
 
 #[derive(Clone)]
-pub struct OfflinePackingKeys<'a> {
-    pub packing_params: Option<&'a PackParams>,
+pub struct OfflinePackingKeys {
+    pub packing_params: Option<PackParams>,
     pub full_key: bool,
 
     pub w_seed: [u8; 32],
@@ -1799,8 +1799,8 @@ pub struct OfflinePackingKeys<'a> {
     pub w_bar_all: Option<PolyMatrixNTT>,
 }
 
-impl<'a> OfflinePackingKeys<'a> {
-    pub fn init_empty() -> OfflinePackingKeys<'a> {
+impl OfflinePackingKeys {
+    pub fn init_empty() -> OfflinePackingKeys {
         OfflinePackingKeys {
             packing_params: None,
             full_key: false,
@@ -1813,7 +1813,7 @@ impl<'a> OfflinePackingKeys<'a> {
         }
     }
 
-    pub fn init(packing_params: &'a PackParams, w_seed: [u8; 32]) -> OfflinePackingKeys<'a> {
+    pub fn init(packing_params: &PackParams, w_seed: [u8; 32]) -> OfflinePackingKeys {
         let w_mask = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
@@ -1824,7 +1824,7 @@ impl<'a> OfflinePackingKeys<'a> {
         let x = generate_rotations(&packing_params, &w_mask);
         let w_all = Some(x);
         OfflinePackingKeys {
-            packing_params: Some(packing_params),
+            packing_params: Some(packing_params.clone()),
             full_key: false,
             w_seed,
             v_seed: [0; 32],
@@ -1836,10 +1836,10 @@ impl<'a> OfflinePackingKeys<'a> {
     }
 
     pub fn init_full(
-        packing_params: &'a PackParams,
+        packing_params: &PackParams,
         w_seed: [u8; 32],
         v_seed: [u8; 32],
-    ) -> OfflinePackingKeys<'a> {
+    ) -> OfflinePackingKeys {
         let w_mask = PolyMatrixNTT::random_rng(
             &packing_params.params,
             1,
@@ -1857,7 +1857,7 @@ impl<'a> OfflinePackingKeys<'a> {
         let (w_all, w_bar_all) = (Some(x), Some(y));
 
         OfflinePackingKeys {
-            packing_params: Some(packing_params),
+            packing_params: Some(packing_params.clone()),
             full_key: true,
             w_seed,
             v_seed,
