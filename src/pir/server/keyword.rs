@@ -62,27 +62,183 @@ pub struct KeywordServer<T: Sync> {
     rlwe_q_prime_2: u64,
 }
 
-impl KeywordServer<u16> {
-    pub fn setup(records: &[KeywordRecord], config: KeywordServerConfig) -> io::Result<Self> {
-        if records.is_empty() {
+#[derive(Clone, Debug)]
+pub struct KeywordServerGpuMemoryEstimate {
+    pub num_items: usize,
+    pub item_size_bits: usize,
+    pub dim0: usize,
+    pub db_rows: usize,
+    pub db_cols: usize,
+    pub db_cols_prime: usize,
+    pub instances: usize,
+    pub poly_len: usize,
+    pub crt_count: usize,
+    pub t_exp_left: usize,
+    pub db_bytes: u128,
+    pub hint_bytes: u128,
+    pub prep_pack_bytes: u128,
+    pub r_buffers_bytes: u128,
+    pub bold_t_bytes: u128,
+    pub peak_bytes: u128,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeywordServerGpuMemoryCheck {
+    pub estimate: KeywordServerGpuMemoryEstimate,
+    pub available_bytes: u64,
+}
+
+struct KeywordServerSetupPlan {
+    num_items: usize,
+    entry_size: usize,
+    item_size_bits: usize,
+    dim0: usize,
+    interpolate_degree: usize,
+    params: crate::params::Params,
+    db_rows: usize,
+    db_cols: usize,
+    db_cols_prime: usize,
+    c: usize,
+}
+
+impl KeywordServerGpuMemoryEstimate {
+    fn from_plan(plan: &KeywordServerSetupPlan) -> Self {
+        let params = &plan.params;
+        let db_rows = plan.db_rows as u128;
+        let db_cols = plan.db_cols as u128;
+        let db_cols_prime = plan.db_cols_prime as u128;
+        let poly_len = params.poly_len as u128;
+        let crt_count = params.crt_count as u128;
+        let t_exp_left = params.t_exp_left as u128;
+        let nphalf = (params.poly_len / 2) as u128;
+        let coeff_count = crt_count * poly_len;
+
+        let db_bytes = db_rows * db_cols * 2;
+        let hint_bytes = db_cols * poly_len * 8;
+        let prep_pack_bytes = db_cols * coeff_count * 8;
+        let r_buffers_bytes = 2 * db_cols_prime * nphalf * coeff_count * 8;
+        let bold_t_bytes = 2 * db_cols_prime * (nphalf - 1) * t_exp_left * poly_len * 8;
+        let peak_bytes = db_bytes + prep_pack_bytes + r_buffers_bytes + bold_t_bytes;
+
+        Self {
+            num_items: plan.num_items,
+            item_size_bits: plan.item_size_bits,
+            dim0: plan.dim0,
+            db_rows: plan.db_rows,
+            db_cols: plan.db_cols,
+            db_cols_prime: plan.db_cols_prime,
+            instances: params.instances,
+            poly_len: params.poly_len,
+            crt_count: params.crt_count,
+            t_exp_left: params.t_exp_left,
+            db_bytes,
+            hint_bytes,
+            prep_pack_bytes,
+            r_buffers_bytes,
+            bold_t_bytes,
+            peak_bytes,
+        }
+    }
+}
+
+impl KeywordServerSetupPlan {
+    fn from_shape(
+        record_count: usize,
+        key_size: usize,
+        value_size: usize,
+        buckets: Option<usize>,
+        dim0: Option<usize>,
+    ) -> io::Result<Self> {
+        if record_count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "keyword record set must contain at least one record",
             ));
         }
-        if config.key_size == 0 {
+        if key_size == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "keyword key size must be non-zero",
             ));
         }
-        if config.value_size == 0 {
+        if value_size == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "keyword value size must be non-zero",
             ));
         }
 
+        let num_items = buckets.unwrap_or_else(|| default_bucket_count(record_count));
+        if num_items < record_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "bucket count {} must be >= record count {}",
+                    num_items, record_count
+                ),
+            ));
+        }
+
+        let entry_size = key_size + value_size;
+        let item_size_bits = entry_size * 8;
+        if item_size_bits % 16 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry size must be a multiple of 16 bits",
+            ));
+        }
+
+        let dim0 = dim0.unwrap_or_else(|| {
+            let default_dim0 = if num_items >= 256_000_000 {
+                32768
+            } else {
+                2048
+            };
+            let (_, _, (db_rows, _, _)) =
+                params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, default_dim0);
+            db_rows
+        });
+
+        let (params, interpolate_degree, _) =
+            params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
+
+        let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
+        let db_cols = params.instances * params.poly_len;
+        let db_cols_prime = params.instances;
+        let c = db_cols_prime / interpolate_degree;
+
+        if num_items < db_rows {
+            let min_records = db_rows / 2 + 1;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "bucket count {} is too small for the PIR scheme (needs at least {}); use at least {} records, or pass --buckets {}",
+                    num_items, db_rows, min_records, db_rows
+                ),
+            ));
+        }
+
+        Ok(Self {
+            num_items,
+            entry_size,
+            item_size_bits,
+            dim0,
+            interpolate_degree,
+            params,
+            db_rows,
+            db_cols,
+            db_cols_prime,
+            c,
+        })
+    }
+
+    fn from_records(records: &[KeywordRecord], config: &KeywordServerConfig) -> io::Result<Self> {
+        if records.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "keyword record set must contain at least one record",
+            ));
+        }
         for (idx, record) in records.iter().enumerate() {
             if record.key.len() != config.key_size {
                 return Err(io::Error::new(
@@ -108,61 +264,139 @@ impl KeywordServer<u16> {
             }
         }
 
-        let num_items = config
-            .buckets
-            .unwrap_or_else(|| default_bucket_count(records.len()));
-        if num_items < records.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "bucket count {} must be >= record count {}",
-                    num_items,
-                    records.len()
-                ),
-            ));
-        }
+        Self::from_shape(
+            records.len(),
+            config.key_size,
+            config.value_size,
+            config.buckets,
+            config.dim0,
+        )
+    }
+}
 
-        let entry_size = config.key_size + config.value_size;
-        let item_size_bits = entry_size * 8;
-        if item_size_bits % 16 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "entry size must be a multiple of 16 bits",
-            ));
-        }
+impl KeywordServer<u16> {
+    pub fn estimate_setup_memory(
+        records: &[KeywordRecord],
+        config: &KeywordServerConfig,
+    ) -> io::Result<KeywordServerGpuMemoryEstimate> {
+        let plan = KeywordServerSetupPlan::from_records(records, config)?;
+        Ok(KeywordServerGpuMemoryEstimate::from_plan(&plan))
+    }
+
+    pub fn estimate_setup_memory_for_shape(
+        record_count: usize,
+        key_size: usize,
+        value_size: usize,
+        buckets: Option<usize>,
+        dim0: Option<usize>,
+    ) -> io::Result<KeywordServerGpuMemoryEstimate> {
+        let plan =
+            KeywordServerSetupPlan::from_shape(record_count, key_size, value_size, buckets, dim0)?;
+        Ok(KeywordServerGpuMemoryEstimate::from_plan(&plan))
+    }
+
+    pub fn check_setup_memory(
+        records: &[KeywordRecord],
+        config: &KeywordServerConfig,
+    ) -> io::Result<KeywordServerGpuMemoryCheck> {
+        let plan = KeywordServerSetupPlan::from_records(records, config)?;
+        let estimate = KeywordServerGpuMemoryEstimate::from_plan(&plan);
 
         cuda_encode::init_memory_pool();
-
-        let dim0 = config.dim0.unwrap_or_else(|| {
-            let default_dim0 = if num_items >= 256_000_000 {
-                32768
-            } else {
-                2048
-            };
-            let (_, _, (db_rows, _, _)) =
-                params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, default_dim0);
-            db_rows
-        });
-
-        let (params, interpolate_degree, _) =
-            params_rgswpir_given_input_size_and_dim0(num_items, item_size_bits, dim0);
-
-        let gamma = params.poly_len;
-        let db_rows = 1 << (params.db_dim_1 + params.poly_len_log2);
-        let db_cols = params.instances * params.poly_len;
-        let db_cols_prime = db_cols / gamma;
-        let c = db_cols_prime / interpolate_degree;
-        let pt_modulus = params.pt_modulus;
-        if num_items < db_rows {
-            let min_records = db_rows / 2 + 1;
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "bucket count {} is too small for the PIR scheme (needs at least {}); use at least {} records, or pass --buckets {}",
-                    num_items, db_rows, min_records, db_rows
-                ),
+        let available_bytes = cuda_encode::available_memory_bytes();
+        if available_bytes == 0 {
+            return Err(io::Error::other(
+                "failed to query available GPU memory from CUDA runtime",
             ));
         }
+        if estimate.peak_bytes > available_bytes as u128 {
+            return Err(io::Error::other(format!(
+                "insufficient GPU memory for startup precomputation: requires {} bytes, only {} bytes available (db_rows={}, db_cols={}, instances={}, dim0={})",
+                estimate.peak_bytes,
+                available_bytes,
+                estimate.db_rows,
+                estimate.db_cols,
+                estimate.instances,
+                estimate.dim0,
+            )));
+        }
+
+        Ok(KeywordServerGpuMemoryCheck {
+            estimate,
+            available_bytes,
+        })
+    }
+
+    pub fn check_setup_memory_for_shape(
+        record_count: usize,
+        key_size: usize,
+        value_size: usize,
+        buckets: Option<usize>,
+        dim0: Option<usize>,
+    ) -> io::Result<KeywordServerGpuMemoryCheck> {
+        let plan =
+            KeywordServerSetupPlan::from_shape(record_count, key_size, value_size, buckets, dim0)?;
+        let estimate = KeywordServerGpuMemoryEstimate::from_plan(&plan);
+
+        cuda_encode::init_memory_pool();
+        let available_bytes = cuda_encode::available_memory_bytes();
+        if available_bytes == 0 {
+            return Err(io::Error::other(
+                "failed to query available GPU memory from CUDA runtime",
+            ));
+        }
+        if estimate.peak_bytes > available_bytes as u128 {
+            return Err(io::Error::other(format!(
+                "insufficient GPU memory for startup precomputation: requires {} bytes, only {} bytes available (db_rows={}, db_cols={}, instances={}, dim0={})",
+                estimate.peak_bytes,
+                available_bytes,
+                estimate.db_rows,
+                estimate.db_cols,
+                estimate.instances,
+                estimate.dim0,
+            )));
+        }
+
+        Ok(KeywordServerGpuMemoryCheck {
+            estimate,
+            available_bytes,
+        })
+    }
+
+    pub fn setup(records: &[KeywordRecord], config: KeywordServerConfig) -> io::Result<Self> {
+        let plan = KeywordServerSetupPlan::from_records(records, &config)?;
+        let estimate = KeywordServerGpuMemoryEstimate::from_plan(&plan);
+
+        cuda_encode::init_memory_pool();
+        let available_bytes = cuda_encode::available_memory_bytes();
+        if available_bytes == 0 {
+            return Err(io::Error::other(
+                "failed to query available GPU memory from CUDA runtime",
+            ));
+        }
+        if estimate.peak_bytes > available_bytes as u128 {
+            return Err(io::Error::other(format!(
+                "insufficient GPU memory for startup precomputation: requires {} bytes, only {} bytes available (db_rows={}, db_cols={}, instances={}, dim0={})",
+                estimate.peak_bytes,
+                available_bytes,
+                estimate.db_rows,
+                estimate.db_cols,
+                estimate.instances,
+                estimate.dim0,
+            )));
+        }
+
+        let num_items = plan.num_items;
+        let entry_size = plan.entry_size;
+        let item_size_bits = plan.item_size_bits;
+        let dim0 = plan.dim0;
+        let interpolate_degree = plan.interpolate_degree;
+        let params = plan.params;
+        let gamma = params.poly_len;
+        let db_rows = plan.db_rows;
+        let db_cols = plan.db_cols;
+        let c = plan.c;
+        let pt_modulus = params.pt_modulus;
 
         let per = num_items / db_rows;
         let item_size_elements = item_size_bits / 16;

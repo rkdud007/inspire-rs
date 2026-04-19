@@ -3,6 +3,7 @@
 unsafe extern "C" {
     fn gpu_init_memory_pool();
     fn gpu_trim_memory_pool();
+    fn gpu_available_memory_bytes() -> u64;
     fn gpu_encode_db_from_host(
         h_db_in: *const u16,
         h_db_out: *mut u16,
@@ -137,4 +138,9 @@ pub fn trim_memory_pool() {
     unsafe {
         gpu_trim_memory_pool();
     }
+}
+
+/// Return pool-aware available GPU memory in bytes.
+pub fn available_memory_bytes() -> u64 {
+    unsafe { gpu_available_memory_bytes() }
 }

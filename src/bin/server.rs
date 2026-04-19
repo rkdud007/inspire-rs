@@ -8,7 +8,9 @@ use clap::Parser;
 use inspire_rs::commons::{
     MSG_HANDSHAKE, MSG_KEYWORD_QUERY, MSG_KEYWORD_RESPONSE, recv_msg, send_msg,
 };
-use inspire_rs::{load_dataset, setup_keyword_server};
+use inspire_rs::kv::KeywordServerConfig;
+use inspire_rs::pir::server::KeywordServer;
+use inspire_rs::{PUBLIC_KEY_ID_LEN, dataset_to_keyword_records, load_dataset};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -31,6 +33,10 @@ struct Args {
     /// First-dimension size override.
     #[arg(long)]
     dim0: Option<usize>,
+
+    /// Print the deterministic GPU memory estimate and exit.
+    #[arg(long)]
+    estimate_memory: bool,
 }
 
 fn log(msg: &str) {
@@ -40,6 +46,10 @@ fn log(msg: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     eprintln!("[init {:>6}s] {}", secs % 100000, msg);
+}
+
+fn format_gib(bytes: u128) -> String {
+    format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,8 +67,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.kem_name,
         dataset.public_key_len
     ));
+    let records = dataset_to_keyword_records(&dataset);
+    let config = KeywordServerConfig {
+        key_size: PUBLIC_KEY_ID_LEN,
+        value_size: dataset.public_key_len,
+        buckets: args.buckets,
+        dim0: args.dim0,
+    };
+    log("checking GPU memory requirements");
+    let memory_check = KeywordServer::<u16>::check_setup_memory(&records, &config)?;
+    println!(
+        "startup GPU memory check: require {} ({} bytes), available {} ({} bytes)",
+        format_gib(memory_check.estimate.peak_bytes),
+        memory_check.estimate.peak_bytes,
+        format_gib(memory_check.available_bytes as u128),
+        memory_check.available_bytes,
+    );
+    println!(
+        "estimate details: buckets {}, dim0 {}, db_rows {}, db_cols {}, instances {}",
+        memory_check.estimate.num_items,
+        memory_check.estimate.dim0,
+        memory_check.estimate.db_rows,
+        memory_check.estimate.db_cols,
+        memory_check.estimate.instances,
+    );
+    if args.estimate_memory {
+        return Ok(());
+    }
     log("initializing keyword PIR runtime");
-    let keyword_server = setup_keyword_server(&dataset, args.buckets, args.dim0)?;
+    let keyword_server = KeywordServer::<u16>::setup(&records, config)?;
     log("keyword PIR runtime ready");
     let public_params = keyword_server.public_params();
     let handshake_json = serde_json::to_vec(&public_params)?;

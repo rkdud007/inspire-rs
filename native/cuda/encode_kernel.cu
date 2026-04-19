@@ -247,10 +247,16 @@ extern "C" void gpu_init_memory_pool() {
     }
     uint64_t threshold = UINT64_MAX;
     cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold);
-    // Create high-priority stream for query path
-    int least_priority, greatest_priority;
-    cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
-    cudaStreamCreateWithPriority(&g_query_stream, cudaStreamNonBlocking, greatest_priority);
+    // Create high-priority stream for query path once.
+    if (g_query_stream == nullptr) {
+        int least_priority, greatest_priority;
+        cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
+        cudaStreamCreateWithPriority(&g_query_stream, cudaStreamNonBlocking, greatest_priority);
+    }
+}
+
+extern "C" uint64_t gpu_available_memory_bytes() {
+    return static_cast<uint64_t>(gpu_available_memory());
 }
 
 // Main entry point called from Rust

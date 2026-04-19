@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::Parser;
 use rayon;
 
+#[cfg(feature = "gpu")]
+use inspire_rs::PUBLIC_KEY_ID_LEN;
 use inspire_rs::dataset::writer::DatasetWriter;
+#[cfg(feature = "gpu")]
+use inspire_rs::pir::server::KeywordServer;
 use inspire_rs::{DatasetGenerator, KemVariant, load_dataset};
 
 #[derive(Parser, Debug)]
@@ -34,6 +38,14 @@ struct Args {
     #[arg(long)]
     threads: Option<usize>,
 
+    /// Target cuckoo bucket count for the server that will consume this dataset.
+    #[arg(long)]
+    buckets: Option<usize>,
+
+    /// Target first-dimension size override for the server that will consume this dataset.
+    #[arg(long)]
+    dim0: Option<usize>,
+
     /// Print the first N key_ids (hex) after writing the dataset.
     /// Omit N to print all records.
     #[arg(long, num_args = 0..=1, default_missing_value = "18446744073709551615")]
@@ -45,11 +57,44 @@ struct Args {
     list_keys: Option<usize>,
 }
 
+#[cfg(feature = "gpu")]
+fn format_gib(bytes: u128) -> String {
+    format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let available_cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let num_threads = args.threads.unwrap_or(available_cpus);
+
+    let pk_len = args.kem.public_key_len();
+    #[cfg(feature = "gpu")]
+    {
+        let memory_check = KeywordServer::<u16>::check_setup_memory_for_shape(
+            args.count,
+            PUBLIC_KEY_ID_LEN,
+            pk_len,
+            args.buckets,
+            args.dim0,
+        )?;
+        eprintln!(
+            "server GPU preflight: require {} ({} bytes), available {} ({} bytes)",
+            format_gib(memory_check.estimate.peak_bytes),
+            memory_check.estimate.peak_bytes,
+            format_gib(memory_check.available_bytes as u128),
+            memory_check.available_bytes,
+        );
+        eprintln!(
+            "target server layout: buckets {}, dim0 {}, db_rows {}, db_cols {}, instances {}",
+            memory_check.estimate.num_items,
+            memory_check.estimate.dim0,
+            memory_check.estimate.db_rows,
+            memory_check.estimate.db_cols,
+            memory_check.estimate.instances,
+        );
+    }
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build_global()
@@ -61,7 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generator = generator.with_batch_size(batch_size);
     }
 
-    let pk_len = args.kem.public_key_len();
     let mut writer = DatasetWriter::create(&args.out, args.kem.name(), args.count, pk_len)?;
 
     generator.stream_to_writer(&mut writer, |done, total| {
